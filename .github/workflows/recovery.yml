@@ -1,0 +1,41 @@
+name: Release recovery drills
+on: workflow_dispatch
+permissions:
+  contents: read
+jobs:
+  checkpoint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - name: Build a snapshot with one failed source
+        run: PYTHONPATH=. python tests/release_drill.py prepare
+      - uses: actions/upload-artifact@v4
+        with:
+          name: isolated-checkpoint
+          path: .runtime/drill/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+  rejected-release:
+    needs: checkpoint
+    runs-on: ubuntu-latest
+    steps:
+      - id: rejection
+        name: Simulate release refusal after durable ingestion
+        continue-on-error: true
+        run: exit 1
+      - name: Check the expected outcome
+        run: test "${{ steps.rejection.outcome }}" = failure
+  recovery:
+    needs: rejected-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/download-artifact@v4
+        with:
+          name: isolated-checkpoint
+          path: .runtime/drill
+      - name: Verify unchanged content, retry and cold restore
+        run: PYTHONPATH=. python tests/release_drill.py verify

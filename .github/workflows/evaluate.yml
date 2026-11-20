@@ -1,0 +1,58 @@
+name: Trial evaluation
+on:
+  schedule:
+    - cron: '37 1,7,13,19 * * *'
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: read
+concurrency:
+  group: trial-evaluation
+  cancel-in-progress: false
+jobs:
+  evaluate:
+    if: github.ref_name == github.event.repository.default_branch && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/setup-python@v6
+        with: {python-version: '3.12'}
+      - uses: actions/cache/restore@v4
+        with:
+          path: .runtime/trial-archive
+          key: trial-archive-v1-${{ github.run_id }}
+          restore-keys: trial-archive-v1-
+      - name: Collect trusted observations and replay both source sets
+        id: evaluate
+        run: python -m hotnews.evaluate --sync
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          PAGE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+      - uses: actions/cache/save@v4
+        if: success() && hashFiles('.runtime/trial-archive/*.json.gz') != ''
+        with:
+          path: .runtime/trial-archive
+          key: trial-archive-v1-${{ github.run_id }}
+      - uses: actions/upload-artifact@v4
+        if: steps.evaluate.outputs.evidence_48
+        with:
+          name: ${{ steps.evaluate.outputs.evidence_48 }}
+          path: .runtime/evaluation/${{ steps.evaluate.outputs.evidence_48 }}.zip
+          compression-level: 0
+          retention-days: 10
+      - uses: actions/upload-artifact@v4
+        if: steps.evaluate.outputs.evidence_168
+        with:
+          name: ${{ steps.evaluate.outputs.evidence_168 }}
+          path: .runtime/evaluation/${{ steps.evaluate.outputs.evidence_168 }}.zip
+          compression-level: 0
+          retention-days: 10
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trial-report
+          path: .runtime/evaluation/report-*
+          retention-days: 10
+          if-no-files-found: error
