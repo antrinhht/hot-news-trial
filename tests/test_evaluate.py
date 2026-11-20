@@ -67,6 +67,22 @@ def story(title, url):
 
 
 class TrialEvaluationTests(unittest.TestCase):
+    def test_partial_export_does_not_certify_a_longer_study(self):
+        seed = sample(0, {})
+        index = {
+            "trial_start": stamp(START),
+            "verified_through": stamp(START + timedelta(hours=48) + GRACE),
+        }
+        report48 = report(
+            [seed], 48, START + timedelta(days=8), registry(), archive_index=index
+        )
+        self.assertNotEqual(report48["status"], "evidence_unavailable")
+        report7d = report(
+            [seed], 168, START + timedelta(days=8), registry(), archive_index=index
+        )
+        self.assertEqual(report7d["status"], "evidence_unavailable")
+        self.assertIsNone(report7d["acceptance"]["grid_95_percent"])
+
     def test_rolling_preflight_exact_start_seed_and_tail(self):
         rows = {
             str(i): {"at": ts, "observed": True}

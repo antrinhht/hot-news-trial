@@ -314,7 +314,8 @@ def sync(directory, now):
         start
         and start < now - RETENTION
         and not any(
-            start <= headers[rid]["at"] < start + RETENTION and headers[rid]["observed"]
+            start <= headers[rid]["at"] <= min(now - RETENTION, start + STUDY + GRACE)
+            and headers[rid]["observed"]
             for rid in keep
         )
     ):
@@ -327,7 +328,9 @@ def sync(directory, now):
         )
     if start and metadata.get("retained_ids"):
         for rid, at in metadata.get("observed_runs", {}).items():
-            if rid not in keep or not headers[rid]["observed"]:
+            if start <= instant(at) < start + STUDY + GRACE and (
+                rid not in keep or not headers[rid]["observed"]
+            ):
                 unavailable.append(
                     {
                         "at": at,
@@ -346,6 +349,7 @@ def sync(directory, now):
         "trial_start": stamp(start) if start else None,
         "frozen": frozen,
         "retained_ids": sorted(keep),
+        "verified_through": stamp(min(now, start + STUDY + GRACE)) if start else None,
         "observed_runs": {
             rid: stamp(headers[rid]["at"])
             for rid in sorted(keep)
@@ -820,6 +824,15 @@ def report(entries, hours, now, sources, reviews=None, archive_index=None):
         for entry in archive_index.get("unavailable", [])
         if start <= instant(entry["at"]) < end + GRACE
     ]
+    through = archive_index.get("verified_through")
+    if through and complete and instant(through) < end + GRACE:
+        unavailable.append(
+            {
+                "at": through,
+                "run_id": None,
+                "reason": "archive ends before this evaluation window is complete",
+            }
+        )
     archived = {str(e["run"]["id"]) for e in entries if e.get("observation")}
     flagged = {i["run_id"] for i in unavailable}
     for rid, at in archive_index.get("observed_runs", {}).items():
@@ -913,19 +926,32 @@ def markdown(r):
 
 def archive_window(directory, destination, start, end):
     """Bundle original snapshots plus trailing observer checks for an offline rerun."""
+    headers = archive_headers(directory)
+    included = {rid for rid, row in headers.items() if start <= row["at"] < end + GRACE}
+    seeds = [
+        (row["at"], rid)
+        for rid, row in headers.items()
+        if row["observed"] and row["at"] < start
+    ]
+    if seeds:
+        included.add(max(seeds)[1])
     with ZipFile(destination, "w", compression=ZIP_STORED) as bundle:
         index = directory / INDEX_NAME
         if index.is_file():
-            bundle.write(index, INDEX_NAME)
-        for path in sorted(directory.glob("*.json.gz")):
-            with gzip.open(path, "rt", encoding="utf-8") as source:
-                row = json.load(source)
-            at = instant(
-                row.get("observation", {}).get("as_of") or row["run"]["created_at"]
+            meta = json.loads(index.read_text(encoding="utf-8"))
+            meta["verified_through"] = stamp(
+                min(
+                    instant(meta["verified_through"])
+                    if meta.get("verified_through")
+                    else end + GRACE,
+                    end + GRACE,
+                )
             )
-            # Include one pre-window sample to retain the first authoritative trial clock.
-            if start - timedelta(minutes=20) <= at < end + timedelta(minutes=20):
-                bundle.write(path, path.name)
+            meta["retained_ids"] = sorted(included)
+            bundle.writestr(INDEX_NAME, json.dumps(meta, ensure_ascii=False))
+        for rid in sorted(included):
+            path = directory / (rid + ".json.gz")
+            bundle.write(path, path.name)
 
 
 def main():
