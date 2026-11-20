@@ -42,3 +42,5 @@ Trên GitHub runner ngày 20/11/2026, 13 đầu tin trả bài trong lượt pre
 Job deploy đã xác nhận manifest công khai trên Pages. Workflow diễn tập riêng đã kiểm tra snapshot không đổi, lỗi một nguồn, khôi phục sau một bước phát hành bị từ chối có mô phỏng và dựng lại trạng thái từ JSON công khai. [Bản phát hành đầu](https://github.com/antrinhht/hot-news-trial/actions/runs/44717442678) · [Diễn tập khôi phục](https://github.com/antrinhht/hot-news-trial/actions/runs/44717783960)
 
 Mỗi lượt đánh giá đính kèm báo cáo Markdown và JSON cho hai cửa sổ 48 giờ và 7 ngày. Báo cáo ban đầu ghi 13/14 nguồn. [Báo cáo ban đầu](https://github.com/antrinhht/hot-news-trial/actions/runs/44717790082)
+
+Trong lượt kiểm tra đầu, bảy nguồn cho một sự kiện được nhiều tòa soạn đưa tin. Danh mục mở rộng cho bốn sự kiện. [Mẫu đối chiếu và cách tái lập](reports/initial-review.md)

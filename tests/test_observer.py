@@ -94,6 +94,16 @@ class ObserverTests(unittest.TestCase):
         self.assertEqual(result["candidates"], [])
         source.assert_not_called()
 
+    @patch("hotnews.observer._read_source")
+    @patch("hotnews.observer.fetch_public", return_value={"events": []})
+    def test_only_collector_retries_a_rate_limited_provider(self, page, download):
+        caixin = next(s for s in registry() if s["source_id"] == "caixin-global")
+        health = {"caixin-global": {"status": "failed", "next_due_at": "2026-11-20T10:00:00Z"}}
+        with patch("hotnews.observer._targets", return_value=[(caixin, 30)]):
+            result = sample("", as_of=NOW, source_health=health)
+        self.assertEqual(result["polls"][0]["status"], "cooldown")
+        download.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -119,7 +119,8 @@ def sample(base, *, as_of=None, source_health=None):
                 "source_interval_minutes": source["interval_minutes"]}
         previous = (source_health or {}).get(sid, {})
         if (previous.get("status") in {"failed", "empty"}
-                and previous.get("next_due_at", "") > stamp(now)):
+                and (previous.get("next_due_at", "") > stamp(now) or previous.get("issue") == "rate_limited"
+                     or source["provider"] == "google_news")):
             poll["status"] = "cooldown"
             result["polls"].append(poll)
             continue
