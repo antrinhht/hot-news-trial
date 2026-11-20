@@ -4,6 +4,7 @@
   const PAGE_SIZE = 18;
   const CHECK_INTERVAL = 60_000;
   const OLD_EDITION = 30 * CHECK_INTERVAL;
+  const WITHHELD_LABEL = "Giữ nguyên văn · bản dịch chưa đạt kiểm tra";
   const $ = id => document.getElementById(id);
   const regions = {CN: "Trung Quốc", US: "Mỹ", intl: "Quốc tế"};
   const statuses = {
@@ -94,6 +95,7 @@
     const primary = items.find(item => item.title === event.title) || items[0];
     const title = node("h2");
     const translated = englishTitle(event);
+    const withheld = !translated && event.translation_status === "withheld";
     const titleLink = link(translated || event.title, primary?.url, "headline");
     titleLink.lang = translated ? "en" : sourceMap.get(primary?.source_id)?.language || "";
     title.append(titleLink);
@@ -103,6 +105,7 @@
     const ownerCount = new Set(listOf(event.owners)).size;
     credit.append(node("span", ownerCount + " bên độc lập"));
     if (translated) credit.append(node("span", "Dịch máy Trung → Anh"));
+    if (withheld) credit.append(node("span", WITHHELD_LABEL));
     article.append(credit);
     if (view === "selected" && event.selected_reason) {
       article.append(node("p", event.selected_reason, "reason"));
@@ -119,7 +122,11 @@
       const itemTime = observed(item.time_kind) ? item.first_seen_at : (item.source_time || item.first_seen_at);
       const translation = englishTitle(item);
       const attribution = sourceName(source, item.source_id) + " · " + when(item.time_kind, itemTime);
-      li.append(node("span", attribution + (translation ? " · Dịch máy Trung → Anh" : "")));
+      let note = translation ? " · Dịch máy Trung → Anh" : "";
+      if (!translation && item.translation_status === "withheld" && !(withheld && item.title === event.title)) {
+        note = " · " + WITHHELD_LABEL;
+      }
+      li.append(node("span", attribution + note));
       const itemLink = link(translation || item.title || event.title, item.url);
       itemLink.lang = translation ? "en" : source?.language || "";
       li.append(itemLink);

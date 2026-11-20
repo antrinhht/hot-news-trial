@@ -310,6 +310,7 @@ def recover_engine(feed):
             item = {**raw, "event_id": eid, "last_seen_at": raw["first_seen_at"],
                     "primary_url": raw.get("primary_url", ""), "guid": raw.get("guid", "")}
             item.pop("title_en", None)  # Translations are cached separately by the exact source title.
+            item.pop("translation_status", None)
             iid = item["item_id"]
             for alias in _aliases(item["source_id"], item, item["canonical_url"]):
                 engine["aliases"][alias] = iid

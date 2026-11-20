@@ -103,6 +103,28 @@ test("unchanged checks retain cards, only fetch the manifest, and distinguish ol
   assert.equal(card.querySelectorAll("details")[0].open, true);
 });
 
+test("explains a withheld translation once per affected headline and keeps the source link", async () => {
+  const s = await start();
+  s.feed = edition("2");
+  const entry = s.feed.events[0];
+  const primary = entry.items[0];
+  delete entry.title_en;
+  delete primary.title_en;
+  entry.translation_status = primary.translation_status = "withheld";
+  entry.items.push({...primary, title: "第二篇中文标题", url: "https://weibo.com/2"});
+  entry.items.push({source_id: "weibo", title: "第三篇中文标题", url: "https://weibo.com/3"});
+  await s.nodes.refresh.listeners.click();
+  const card = s.nodes.articles.children[0];
+  const members = card.querySelectorAll("li");
+  const notice = /bản dịch chưa đạt kiểm tra/;
+  assert.equal(card.querySelectorAll("span").filter(node => notice.test(node.textContent)).length, 2);
+  assert.doesNotMatch(members[0].children[0].textContent, notice);
+  assert.match(members[1].children[0].textContent, notice);
+  assert.doesNotMatch(members[2].children[0].textContent, notice);
+  assert.equal(members[1].querySelectorAll("a")[0].href, "https://weibo.com/2");
+  assert.equal(members[1].querySelectorAll("a")[0].lang, "zh");
+});
+
 test("updates only a matching newer edition, preserves expanded events and handles failures", async () => {
   const s = await start();
   const card = s.nodes.articles.children[0];

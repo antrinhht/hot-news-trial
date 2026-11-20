@@ -7,7 +7,7 @@ Trang tiếng Việt theo dõi 14 đầu tin tại Trung Quốc, Mỹ, Anh, Đ�
 - **Mới nhất** giữ sự kiện xuất hiện trong 48 giờ. Bài không có giờ từ nguồn dùng giờ phát hiện đầu tiên.
 - **Tin nóng** cần ít nhất hai bên độc lập, trong đó có một nguồn biên tập. Tín hiệu giảm một nửa sau 24 giờ. Hai kênh Associated Press tính là một bên.
 - **Tuyển chọn** hiển thị lý do và các bài để đối chiếu. Thị trường của thẻ dựa trên nơi đặt nguồn. Một sự kiện có thể xuất hiện ở nhiều thị trường.
-- Tiêu đề tiếng Trung có bản dịch máy tiếng Anh ngay trên thẻ. Mở **Đối chiếu** để đọc nguyên văn và đến bài nguồn. Nếu dịch chưa thành công, trang giữ tiêu đề gốc.
+- Tiêu đề tiếng Trung có bản dịch máy tiếng Anh ngay trên thẻ. Mở **Đối chiếu** để đọc nguyên văn và đến bài nguồn. Nếu bản dịch thiếu tên nước hoặc người phát biểu mà bộ kiểm tra nhận diện được, trang hiển thị tiêu đề gốc.
 - Khi tab đang mở, trang kiểm tra bản phát hành mỗi phút. **Kiểm tra bản mới** kiểm tra ngay. Mốc **Bản xuất bản gần nhất** chỉ đổi khi một bản mới được đưa lên Pages.
 
 ## Chạy cục bộ

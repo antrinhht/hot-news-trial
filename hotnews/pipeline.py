@@ -152,7 +152,9 @@ def build_cycle(state, sources, results, now, dist, public_manifest, release_id)
     from .translate import TRANSLATION_VERSION, enrich_titles
     statuses, public_sources = update_health(sources, state, results, now)
     projection = update_events(state, results, sources, stamp(now))
-    stats = enrich_titles(projection["events"], state.setdefault("translations", {}),
+    if not isinstance(state.get("translations"), dict):
+        state["translations"] = {}
+    stats = enrich_titles(projection["events"], state["translations"],
                           chinese_sources={s["source_id"] for s in sources if s["language"] == "zh"})
     print("English headline coverage:", stats)
     for event in projection["events"]:

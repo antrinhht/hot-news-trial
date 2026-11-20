@@ -27,7 +27,7 @@ class TitleTranslationTests(unittest.TestCase):
         cache = {}
         translator = Mock(return_value=["China announces a new policy", "World news"])
         result = translate.enrich_titles([mixed, other], cache, translator)
-        self.assertEqual(result, {"eligible": 2, "cached": 0, "translated": 2, "remaining": 0})
+        self.assertEqual(result, {"eligible": 2, "cached": 0, "translated": 2, "withheld": 0, "remaining": 0})
         translator.assert_called_once_with([first, second])
         self.assertEqual(first, mixed["title"])
         self.assertEqual(first, mixed["items"][0]["title"])
@@ -78,7 +78,7 @@ class TitleTranslationTests(unittest.TestCase):
              patch.object(translate, "_local_translator", side_effect=RuntimeError("unavailable")), \
              self.assertLogs(translate.LOG, level="WARNING"):
             result = translate.enrich_titles([old, new], cache)
-        self.assertEqual(result, {"eligible": 2, "cached": 1, "translated": 0, "remaining": 1})
+        self.assertEqual(result, {"eligible": 2, "cached": 1, "translated": 0, "withheld": 0, "remaining": 1})
         self.assertEqual(old["title_en"], "Old news")
         self.assertNotIn("title_en", new)
         self.assertEqual(new["items"][0]["title"], "新新闻")
@@ -88,11 +88,46 @@ class TitleTranslationTests(unittest.TestCase):
         stories = [event(title, item(title)) for title in ["中文", "第三条", "第四条"]]
         cache = {}
         result = translate.enrich_titles(stories, cache, lambda _: ["", "中文", "123"])
-        self.assertFalse(cache)
-        self.assertEqual(result["remaining"], 3)
+        self.assertEqual(set(cache.values()), {None})
+        self.assertEqual(result["withheld"], 3)
+        self.assertTrue(all("title_en" not in story for story in stories))
         with self.assertLogs(translate.LOG, level="WARNING"):
-            result = translate.enrich_titles(stories, cache, lambda _: ["only one"])
+            result = translate.enrich_titles(stories, {}, lambda _: ["only one"])
         self.assertEqual(result["remaining"], 3)
+
+    def test_named_parties_and_speaker_checked_before_display_and_after_recovery(self):
+        source = "中俄美三方的和平宣言发布后，将会为俄乌局势带来哪些变量？"
+        speaker = "APEC现场｜王毅：这是一次和平峰会"
+        stories = [event(t, item(t)) for t in (source, speaker)]
+        raw = ["What will the Russian and Chinese declaration bring to the situation in Russia and Russia?",
+               "APEC Live: This is a peace summit."]
+        cache = {}
+        stats = translate.enrich_titles(stories, cache, lambda _: raw)
+        self.assertEqual(stats["withheld"], 2)
+        self.assertTrue(all("title_en" not in s and "title_en" not in s["items"][0] for s in stories))
+        feed = {"translation_version": translate.TRANSLATION_VERSION, "events": stories}
+        self.assertEqual(translate.recover_translations(feed), cache)
+        retry = Mock()
+        self.assertEqual(translate.enrich_titles(stories, cache, retry)["withheld"], 2)
+        retry.assert_not_called()
+        corrupt = {translate._cache_key(source): raw[0], translate._cache_key(speaker): raw[1]}
+        valid = ["What does the Chinese-Russian-American declaration mean for the Russian-Ukrainian situation?",
+                 "APEC site, Wang Yi: This is a peace summit."]
+        self.assertEqual(translate.enrich_titles(stories, corrupt, lambda _: valid)["translated"], 2)
+        self.assertEqual(stories[0]["title_en"], valid[0])
+        self.assertEqual(stories[1]["title_en"], valid[1])
+        self.assertNotIn("translation_status", stories[0]["items"][0])
+        stories[0]["items"][0]["title_en"] = raw[0]
+        self.assertNotIn(translate._cache_key(source), translate.recover_translations(feed))
+
+    def test_country_abbreviation_does_not_expand_in_unrelated_words(self):
+        for title in ("中美洲和加勒比地区", "集中美食推荐", "美国金价"):
+            self.assertEqual(translate._model_input(title), title)
+        self.assertFalse(translate._usable("美国新政策", "It affects us."))
+        self.assertFalse(translate._usable("金价明年或涨至5250美元", "Gold will rise to $5250 next year."))
+        self.assertTrue(translate._usable("金价明年或涨至5250美元", "Gold could rise to $5250 next year."))
+        self.assertTrue(translate._usable("2026APEC成果清单", "List of results for 2026APEC"))
+        self.assertTrue(translate._usable("也可能是最好游戏", "Probably the best game."))
 
     def test_prepare_checks_existing_files_and_never_accepts_partial_downloads(self):
         good = b"local model"
