@@ -54,7 +54,7 @@ def registry():
 def fetch_public(base, file):
     if not base:
         return None
-    url = base.rstrip("/") + "/" + file + "?run=" + os.environ.get("GITHUB_RUN_ID", str(int(time.time())))
+    url = base.rstrip("/") + "/" + file + "?check=" + str(time.time_ns())
     req = Request(url, headers={"Cache-Control": "no-cache", "User-Agent": "HotNewsTrial/1.0"})
     try:
         with urlopen(req, timeout=12) as res:
@@ -149,11 +149,15 @@ def update_health(sources, state, results, now):
 
 def build_cycle(state, sources, results, now, dist, public_manifest, release_id):
     from .events import update_events
+    from .translate import TRANSLATION_VERSION, enrich_titles
     statuses, public_sources = update_health(sources, state, results, now)
     projection = update_events(state, results, sources, stamp(now))
+    stats = enrich_titles(projection["events"], state.setdefault("translations", {}),
+                          chinese_sources={s["source_id"] for s in sources if s["language"] == "zh"})
+    print("English headline coverage:", stats)
     for event in projection["events"]:
         event.pop("heat", None)
-    content = dict(schema_version=SCHEMA, sources=public_sources, **projection)
+    content = dict(schema_version=SCHEMA, translation_version=TRANSLATION_VERSION, sources=public_sources, **projection)
     ui = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((ROOT / "site").rglob("*")) if p.is_file()}
     value = digest([ui, content])
     good = any(row["status"] in {"changed", "unchanged"} for row in statuses)
@@ -165,14 +169,19 @@ def build_cycle(state, sources, results, now, dist, public_manifest, release_id)
     changed = (good or from_checkpoint) and different
     if changed:
         shutil.copytree(ROOT / "site", dist, dirs_exist_ok=True)
+        ui_hash = digest(ui)
+        index = dist / "index.html"
+        index.write_text(index.read_text(encoding="utf-8").replace("__UI_HASH__", ui_hash), encoding="utf-8")
         write(dist / "feed.json", {**content, "published_at": stamp(now), "release_id": release_id, "publish_hash": value})
-        write(dist / "manifest.json", {"schema_version": SCHEMA, "release_id": release_id, "publish_hash": value})
+        write(dist / "manifest.json", {"schema_version": SCHEMA, "release_id": release_id, "publish_hash": value,
+                                       "ui_hash": ui_hash})
     return changed, statuses, value
 
 
 def main():
     from .collector import collect
     from .events import recover_engine
+    from .translate import recover_translations
     parser = argparse.ArgumentParser()
     parser.add_argument("--upstream", type=Path, required=True)
     parser.add_argument("--work", type=Path, default=Path(".runtime"))
@@ -207,6 +216,7 @@ def main():
                 or public_feed.get("publish_hash", public_manifest["publish_hash"]) != public_manifest["publish_hash"]):
             raise RuntimeError("Cold recovery deferred until the matching public feed is available")
         state["engine"] = recover_engine(public_feed)
+        state["translations"] = recover_translations(public_feed)
         if public_manifest.get("trial_basis") == "public-v1" and public_manifest.get("trial_start"):
             state.update(trial_basis="public-v1", trial_start=stamp(instant(public_manifest["trial_start"])))
     due = due_sources(src, state, now)

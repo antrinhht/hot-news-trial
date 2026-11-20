@@ -70,3 +70,23 @@ class WorkflowBehavior(unittest.TestCase):
         self.assertTrue(self.cycle({}, NOW, {"publish_hash":"previous-ui"})[0])
         current = json.loads((self.dist / "manifest.json").read_text(encoding="utf-8"))
         self.assertFalse(self.cycle({}, NOW, current)[0])
+
+    def test_recovered_translation_and_versioned_assets_are_published(self):
+        from hotnews.events import recover_engine
+        from hotnews.translate import TRANSLATION_VERSION, recover_translations
+        self.cycle(run_result("weibo", "中国发布新的贸易政策"))
+        feed = json.loads((self.dist / "feed.json").read_text(encoding="utf-8"))
+        feed["events"][0]["items"][0]["title_en"] = "China announces a new trade policy"
+        self.assertEqual(feed["translation_version"], TRANSLATION_VERSION)
+        self.state = new_state()
+        self.state["engine"] = recover_engine(feed)
+        self.state["translations"] = recover_translations(feed)
+        self.assertTrue(self.cycle({}, NOW, {"publish_hash": "previous"})[0])
+        published = json.loads((self.dist / "feed.json").read_text(encoding="utf-8"))
+        self.assertEqual(published["latest"], feed["latest"])
+        self.assertEqual(published["events"][0]["title_en"], "China announces a new trade policy")
+        self.assertEqual(published["events"][0]["title"], "中国发布新的贸易政策")
+        manifest = json.loads((self.dist / "manifest.json").read_text(encoding="utf-8"))
+        html = (self.dist / "index.html").read_text(encoding="utf-8")
+        self.assertIn("app.js?v=" + manifest["ui_hash"], html)
+        self.assertNotIn("__UI_HASH__", html)

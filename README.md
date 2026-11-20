@@ -7,6 +7,8 @@ Trang tiếng Việt theo dõi 14 đầu tin tại Trung Quốc, Mỹ, Anh, Đ�
 - **Mới nhất** giữ sự kiện xuất hiện trong 48 giờ. Bài không có giờ từ nguồn dùng giờ phát hiện đầu tiên.
 - **Tin nóng** cần ít nhất hai bên độc lập, trong đó có một nguồn biên tập. Tín hiệu giảm một nửa sau 24 giờ. Hai kênh Associated Press tính là một bên.
 - **Tuyển chọn** hiển thị lý do và các bài để đối chiếu. Thị trường của thẻ dựa trên nơi đặt nguồn. Một sự kiện có thể xuất hiện ở nhiều thị trường.
+- Tiêu đề tiếng Trung có bản dịch máy tiếng Anh ngay trên thẻ. Mở **Đối chiếu** để đọc nguyên văn và đến bài nguồn. Nếu dịch chưa thành công, trang giữ tiêu đề gốc.
+- Khi tab đang mở, trang kiểm tra bản phát hành mỗi phút. **Kiểm tra bản mới** kiểm tra ngay. Mốc **Bản xuất bản gần nhất** chỉ đổi khi một bản mới được đưa lên Pages.
 
 ## Chạy cục bộ
 
@@ -26,6 +28,18 @@ Trên Windows dùng Python tại `.upstream/.venv/Scripts/python.exe`. Site tĩn
 ## Vận hành trên GitHub
 
 Chọn **GitHub Actions** làm nguồn Pages. Workflow **Hot news** thu thập theo khung UTC cách nhau 10 phút. Bật **preflight** trong Run workflow để lưu bảng kiểm tra, checkpoint và mẫu đánh giá. Để triển khai, tạo một lượt **Run workflow** mới với preflight tắt. Trong trang của mỗi run, xem bảng theo từng nguồn ở **Job summary**.
+
+GitHub có thể trì hoãn hoặc bỏ lượt theo lịch. Khi mốc xuất bản đứng lâu, kiểm tra xem có lượt `schedule` mới hay không, sau đó xem kết quả build và deploy của lượt đó. Có thể khởi chạy **Run workflow** với preflight tắt để lấy tin ngay. [Lịch sử lượt tự động](https://github.com/antrinhht/hot-news-trial/actions/workflows/publish.yml?query=event%3Aschedule) · [Tài liệu lịch GitHub](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)
+
+Workflow tải mô hình OPUS-MT một lần vào cache của Actions và dịch trên CPU của runner. Checkpoint lưu kết quả theo tiêu đề và phiên bản mô hình. Có thể bật cùng bộ dịch ở máy cá nhân bằng các lệnh sau trước khi chạy pipeline.
+
+```sh
+export HOTNEWS_TRANSLATION_MODEL="$PWD/.runtime/opus-mt-zh-en"
+uv pip install --python .upstream/.venv/bin/python -r requirements-translation.txt
+.upstream/.venv/bin/python -m hotnews.translate --prepare "$HOTNEWS_TRANSLATION_MODEL"
+```
+
+Mô hình của Đại học Helsinki dùng giấy phép CC BY 4.0. Bản chuyển sang CTranslate2 của gaudi được ghim theo revision trong bộ thu. [Mô hình gốc OPUS-MT](https://huggingface.co/Helsinki-NLP/opus-mt-zh-en) · [Bản CTranslate2](https://huggingface.co/gaudi/opus-mt-zh-en-ctranslate2/tree/05d8fc158397bae0c65b8d46c858b6c18e094c12) · [Giấy phép](https://creativecommons.org/licenses/by/4.0/)
 
 - `checkpoint-v1` giữ trạng thái đã xử lý trong 3 ngày. Các lượt không đổi và các lần deploy lỗi vẫn có thể cung cấp checkpoint hợp lệ.
 - `trial-observation-v1` giữ đầu vào chuẩn hóa và phép quan sát độc lập trong 10 ngày. Các lần lấy mẫu đối chiếu phát sinh thêm tối đa hai yêu cầu nguồn mỗi lượt, ngoài lịch cơ sở.

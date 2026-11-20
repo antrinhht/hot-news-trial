@@ -2,7 +2,8 @@
 
 (() => {
   const PAGE_SIZE = 18;
-  const TEN_MINUTES = 600_000;
+  const CHECK_INTERVAL = 60_000;
+  const OLD_EDITION = 30 * CHECK_INTERVAL;
   const $ = id => document.getElementById(id);
   const regions = {CN: "Trung Quốc", US: "Mỹ", intl: "Quốc tế"};
   const statuses = {
@@ -18,10 +19,12 @@
     timeZone: "Asia/Ho_Chi_Minh", day: "2-digit", month: "2-digit",
     year: "numeric", hour: "2-digit", minute: "2-digit", hour12: false
   });
+  const clockFormat = new Intl.DateTimeFormat("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh", hour: "2-digit", minute: "2-digit", hour12: false
+  });
   let feed = null;
   let sourceMap = new Map();
   let eventMap = new Map();
-  let lastBody = "";
   let inFlight = false;
   let lastAttempt = 0;
   let view = "latest";
@@ -74,6 +77,11 @@
     return Array.isArray(value) ? value : [];
   }
 
+  function englishTitle(story) {
+    const translated = story?.title_en?.trim();
+    return translated && translated !== story.title?.trim() ? translated : "";
+  }
+
   function card(event, opened) {
     const article = node("article", null, "article");
     const tags = [...new Set(listOf(event.markets).map(region).filter(Boolean))];
@@ -85,14 +93,16 @@
     const items = listOf(event.items);
     const primary = items.find(item => item.title === event.title) || items[0];
     const title = node("h2");
-    const titleLink = link(event.title, primary?.url, "headline");
-    titleLink.lang = sourceMap.get(primary?.source_id)?.language || "";
+    const translated = englishTitle(event);
+    const titleLink = link(translated || event.title, primary?.url, "headline");
+    titleLink.lang = translated ? "en" : sourceMap.get(primary?.source_id)?.language || "";
     title.append(titleLink);
     article.append(info, title);
     const credit = node("div", null, "credit");
     if (primary) credit.append(link(sourceName(sourceMap.get(primary.source_id), primary.source_id), primary.url));
     const ownerCount = new Set(listOf(event.owners)).size;
     credit.append(node("span", ownerCount + " bên độc lập"));
+    if (translated) credit.append(node("span", "Dịch máy Trung → Anh"));
     article.append(credit);
     if (view === "selected" && event.selected_reason) {
       article.append(node("p", event.selected_reason, "reason"));
@@ -107,10 +117,19 @@
       const li = node("li");
       const source = sourceMap.get(item.source_id);
       const itemTime = observed(item.time_kind) ? item.first_seen_at : (item.source_time || item.first_seen_at);
-      li.append(node("span", sourceName(source, item.source_id) + " · " + when(item.time_kind, itemTime)));
-      const original = link(item.title || event.title, item.url);
-      original.lang = source?.language || "";
-      li.append(original);
+      const translation = englishTitle(item);
+      const attribution = sourceName(source, item.source_id) + " · " + when(item.time_kind, itemTime);
+      li.append(node("span", attribution + (translation ? " · Dịch máy Trung → Anh" : "")));
+      const itemLink = link(translation || item.title || event.title, item.url);
+      itemLink.lang = translation ? "en" : source?.language || "";
+      li.append(itemLink);
+      if (translation) {
+        const original = node("p", "Bản gốc · ", "original-title");
+        const text = node("span", item.title);
+        text.lang = "zh";
+        original.append(text);
+        li.append(original);
+      }
       ul.append(li);
     }
     details.append(ul);
@@ -173,25 +192,61 @@
   function notice(text) {
     const el = $("notice");
     el.className = text ? "notice" : "";
-    el.textContent = text;
+    if (el.textContent !== text) el.textContent = text;
   }
 
-  async function refresh() {
+  async function readJson(path, parameter, value) {
+    const url = new URL(path, document.baseURI);
+    url.searchParams.set(parameter, value);
+    const response = await fetch(url, {cache: "no-store", signal: globalThis.AbortSignal?.timeout?.(20_000)});
+    if (!response.ok) throw new Error("HTTP " + response.status);
+    return response.json();
+  }
+
+  function needsNewPage(release) {
+    const version = document.documentElement.dataset.uiHash;
+    if (!version || !release.ui_hash || version === release.ui_hash) return false;
+    const url = new URL(window.location.href);
+    if (url.searchParams.get("ui") === release.ui_hash) throw new Error("Giao diện chưa đồng bộ");
+    url.searchParams.set("ui", release.ui_hash);
+    window.location.replace(url.href);
+    return true;
+  }
+
+  function reportFreshness(manual, changed) {
+    const now = Date.now();
+    $("last-checked").textContent = "Đã kiểm tra lúc " + clockFormat.format(now) + " · tự kiểm tra mỗi phút";
+    const age = now - Date.parse(feed.published_at);
+    if (age >= OLD_EDITION) {
+      const minutes = Math.floor(age / CHECK_INTERVAL);
+      notice("Đã " + minutes + " phút kể từ bản xuất gần nhất. Trang sẽ tự hiển thị khi có bản mới.");
+    } else if (manual) {
+      notice(changed ? "Đã tải bản xuất mới." : "Bạn đang xem bản xuất mới nhất.");
+    } else {
+      notice("");
+    }
+  }
+
+  async function refresh(manual = false) {
     if (inFlight) return;
     inFlight = true;
     lastAttempt = Date.now();
     $("refresh").disabled = true;
     try {
-      const response = await fetch(new URL("./feed.json", document.baseURI), {cache: "no-cache"});
-      if (!response.ok) throw new Error("HTTP " + response.status);
-      const body = await response.text();
-      if (!feed || body !== lastBody) {
-        const next = JSON.parse(body);
-        if (next.schema_version !== 1 || !["sources", "events", "latest", "hot", "selected"].every(k => Array.isArray(next[k]))) {
-          throw new Error("schema");
+      const check = manual ? lastAttempt : Math.floor(lastAttempt / CHECK_INTERVAL);
+      const release = await readJson("./manifest.json", "check", check);
+      if (release.schema_version !== 1 || !release.publish_hash || !release.release_id) throw new Error("manifest");
+      if (needsNewPage(release)) return;
+      const changed = release.publish_hash !== feed?.publish_hash || release.release_id !== feed?.release_id;
+      if (changed) {
+        const next = await readJson("./feed.json", "release", release.release_id);
+        const validLists = ["sources", "events", "latest", "hot", "selected"].every(k => Array.isArray(next[k]));
+        const published = Date.parse(next.published_at);
+        if (next.schema_version !== 1 || next.publish_hash !== release.publish_hash || next.release_id !== release.release_id ||
+            !validLists || !Number.isFinite(published) || (feed && published < Date.parse(feed.published_at))) {
+          throw new Error("feed");
         }
         feed = next;
-        lastBody = body;
         sourceMap = new Map(feed.sources.map(s => [s.source_id, s]));
         eventMap = new Map(feed.events.map(e => [e.event_id, e]));
         $("published").textContent = stamp(feed.published_at);
@@ -199,12 +254,12 @@
         renderEvents();
         renderSources();
       }
-      notice("");
+      reportFreshness(manual, changed);
     } catch {
       if (feed) notice("Chưa tải được bản xuất mới. Bạn đang xem bản đã tải gần nhất.");
       else {
         $("published").textContent = "Chưa có dữ liệu";
-        $("articles").replaceChildren(node("p", "Chưa tải được bảng tin. Dùng nút “Tải lại bảng tin” để thử lại.", "empty"));
+        $("articles").replaceChildren(node("p", "Chưa tải được bảng tin. Dùng nút “Kiểm tra bản mới” để thử lại.", "empty"));
       }
     } finally {
       $("refresh").disabled = false;
@@ -228,10 +283,10 @@
   onChoice("views", "view", value => { view = value; });
   onChoice("markets", "market", value => { market = value; });
   $("more").addEventListener("click", () => { limit += PAGE_SIZE; renderEvents(); });
-  $("refresh").addEventListener("click", refresh);
+  $("refresh").addEventListener("click", () => refresh(true));
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && Date.now() - lastAttempt >= TEN_MINUTES) refresh();
+    if (!document.hidden && Date.now() - lastAttempt >= CHECK_INTERVAL) refresh();
   });
-  setInterval(() => { if (!document.hidden) refresh(); }, TEN_MINUTES);
+  setInterval(() => { if (!document.hidden && Date.now() - lastAttempt >= CHECK_INTERVAL) refresh(); }, CHECK_INTERVAL);
   refresh();
 })();
