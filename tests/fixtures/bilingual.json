@@ -1,0 +1,125 @@
+{
+ "type": "synthetic reviewed examples; occurrence labels are not news reports",
+ "pairs": [
+  [
+   "rates",
+   1,
+   "Fed raises interest rates by 25 basis points on May 6",
+   "美联储5月6日加息25个基点"
+  ],
+  [
+   "rates",
+   0,
+   "Fed forecasts a 25 basis point increase on May 6",
+   "美联储5月6日加息25个基点"
+  ],
+  [
+   "space",
+   1,
+   "NASA launches Artemis II on April 1",
+   "美国宇航局4月1日发射阿尔忒弥斯2号"
+  ],
+  [
+   "space",
+   0,
+   "NASA delays Artemis II launch on April 1",
+   "美国宇航局4月1日发射阿尔忒弥斯2号"
+  ],
+  [
+   "technology",
+   1,
+   "Apple unveils iPhone 17 on September 9",
+   "苹果9月9日发布iPhone 17"
+  ],
+  [
+   "technology",
+   0,
+   "Apple unveils iPhone 16 on September 9",
+   "苹果9月9日发布iPhone 17"
+  ],
+  [
+   "disaster",
+   1,
+   "Magnitude 7.1 earthquake hits Japan on March 4",
+   "日本3月4日发生7.1级地震"
+  ],
+  [
+   "disaster",
+   0,
+   "Magnitude 6.2 earthquake hits Japan on March 4",
+   "日本3月4日发生7.1级地震"
+  ],
+  [
+   "aviation",
+   1,
+   "Boeing delivers 50 aircraft on June 5",
+   "波音6月5日交付50架飞机"
+  ],
+  [
+   "aviation",
+   0,
+   "Boeing plans to deliver 50 aircraft on June 5",
+   "波音6月5日交付50架飞机"
+  ],
+  [
+   "business",
+   1,
+   "Tesla recalls 12000 cars on July 2",
+   "特斯拉7月2日召回12000辆汽车"
+  ],
+  [
+   "business",
+   0,
+   "Tesla recalls 12000 cars on July 3",
+   "特斯拉7月2日召回12000辆汽车"
+  ],
+  [
+   "trade",
+   1,
+   "EU approves 15% tariff on August 8",
+   "欧盟8月8日批准15%关税"
+  ],
+  [
+   "trade",
+   0,
+   "EU rejects 15% tariff on August 8",
+   "欧盟8月8日批准15%关税"
+  ],
+  [
+   "technology",
+   1,
+   "Microsoft releases Windows 12 on October 6",
+   "微软10月6日发布Windows 12"
+  ],
+  [
+   "technology",
+   0,
+   "Microsoft denies Windows 12 release on October 6",
+   "微软10月6日发布Windows 12"
+  ],
+  [
+   "space",
+   1,
+   "SpaceX launches Falcon 9 on November 3",
+   "SpaceX于11月3日发射猎鹰9号"
+  ],
+  [
+   "space",
+   0,
+   "SpaceX launches Falcon Heavy on November 3",
+   "SpaceX于11月3日发射猎鹰9号"
+  ],
+  [
+   "business",
+   1,
+   "Nvidia announces $10 billion investment on February 8",
+   "英伟达2月8日宣布投资100亿美元"
+  ],
+  [
+   "business",
+   0,
+   "Nvidia may invest $10 billion on February 8",
+   "英伟达2月8日宣布投资100亿美元"
+  ]
+ ]
+}
