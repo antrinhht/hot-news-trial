@@ -1,7 +1,23 @@
+import gzip
+import json
+import tempfile
 import unittest
 from datetime import timedelta
+from pathlib import Path
+from unittest.mock import patch
 
-from hotnews.evaluate import markdown, report
+from hotnews.evaluate import (
+    GRACE,
+    RETENTION,
+    STUDY,
+    archive_headers,
+    load_run,
+    markdown,
+    prune_cache,
+    report,
+    selection,
+    sync,
+)
 from hotnews.pipeline import instant, registry, stamp
 
 START = instant("2026-11-20T13:03:00Z")
@@ -51,6 +67,98 @@ def story(title, url):
 
 
 class TrialEvaluationTests(unittest.TestCase):
+    def test_rolling_preflight_exact_start_seed_and_tail(self):
+        rows = {
+            str(i): {"at": ts, "observed": True}
+            for i, ts in enumerate(
+                (
+                    START - RETENTION - timedelta(seconds=1),
+                    START - RETENTION,
+                    START - timedelta(minutes=20),
+                    START - timedelta(minutes=10),
+                    START,
+                    START + STUDY,
+                    START + STUDY + GRACE,
+                    START + STUDY + GRACE + timedelta(hours=1),
+                )
+            )
+        }
+        self.assertEqual(selection(rows, None, START), {"1", "2", "3", "4"})
+        self.assertEqual(
+            selection(rows, START, START + timedelta(days=14)), {"3", "4", "5"}
+        )
+
+    def test_deletion_limited_to_owned_validated_run_files(self):
+        with tempfile.TemporaryDirectory() as folder:
+            outside = Path(folder)
+            owned = outside / "owned"
+            owned.mkdir()
+            row = sample(0, {})
+            for path in [owned, outside]:
+                with gzip.open(path / "100.json.gz", "wt", encoding="utf-8") as out:
+                    json.dump(row, out)
+                (path / "101.json.gz").write_bytes(b"unrelated")
+            with patch("hotnews.evaluate.OWNED_CACHE", owned.resolve()):
+                self.assertFalse(prune_cache(outside, archive_headers(outside), set()))
+                self.assertTrue(prune_cache(owned, archive_headers(owned), set()))
+            self.assertTrue((outside / "100.json.gz").is_file())
+            self.assertTrue((owned / "101.json.gz").is_file())
+            self.assertFalse((owned / "100.json.gz").exists())
+
+    def test_cached_observation_survives_remote_expiration(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            entry = sample(0, {})
+            entry["run"]["conclusion"] = "success"
+            entry.update(artifact_id=345, artifact_sizes={})
+            with gzip.open(root / "100.json.gz", "wt", encoding="utf-8") as out:
+                json.dump(entry, out)
+            with patch(
+                "hotnews.evaluate.github", side_effect=AssertionError("no remote calls")
+            ):
+                self.assertFalse(load_run(root, entry["run"], None, {}, expired=True))
+            self.assertTrue(archive_headers(root)["100"]["observed"])
+
+    def test_frozen_sync_skips_new_runs_and_marks_incomplete_input(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            entry = sample(0, {})
+            entry["run"].update(conclusion="success", status="completed")
+            entry.update(artifact_id=345, artifact_sizes={})
+            with gzip.open(root / "100.json.gz", "wt", encoding="utf-8") as out:
+                json.dump(entry, out)
+            future = {
+                **entry["run"],
+                "id": 999,
+                "created_at": stamp(START + STUDY + GRACE),
+                "path": ".github/workflows/publish.yml",
+                "run_attempt": 1,
+                "head_branch": "main",
+                "head_repository": {"full_name": "example/test"},
+            }
+            with (
+                patch.dict("os.environ", {"GITHUB_REPOSITORY": "example/test"}),
+                patch("hotnews.evaluate.paged", return_value=[future]),
+                patch("hotnews.evaluate.list_artifacts", return_value=[]),
+                patch(
+                    "hotnews.evaluate.load_run",
+                    side_effect=AssertionError("post-window run downloaded"),
+                ),
+            ):
+                self.assertTrue(sync(root, START + timedelta(days=12)))
+                self.assertFalse(sync(root, START + timedelta(days=13)))
+            index = json.loads(
+                (root / "_archive_state.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(index["frozen"])
+            self.assertEqual(index["retained_ids"], ["100"])
+            absent = report(
+                [], 48, START + timedelta(days=12), registry(), archive_index=index
+            )
+            self.assertEqual(absent["status"], "evidence_unavailable")
+            self.assertTrue(all(v is None for v in absent["acceptance"].values()))
+            self.assertEqual(absent["unavailable_evidence"][0]["run_id"], "100")
+
     def test_elapsed_grid_and_mature_samples_only(self):
         url = "https://example.test/new"
         before = sample(0, {})

@@ -207,6 +207,8 @@ def main():
                 or public_feed.get("publish_hash", public_manifest["publish_hash"]) != public_manifest["publish_hash"]):
             raise RuntimeError("Cold recovery deferred until the matching public feed is available")
         state["engine"] = recover_engine(public_feed)
+        if public_manifest.get("trial_basis") == "public-v1" and public_manifest.get("trial_start"):
+            state.update(trial_basis="public-v1", trial_start=stamp(instant(public_manifest["trial_start"])))
     due = due_sources(src, state, now)
     results = collect(due, args.upstream.resolve(), stamp(now)) if due else {}
     for s in due:
@@ -219,6 +221,10 @@ def main():
     if args.page and public_manifest and ready and not args.preflight and not state.get("trial_start"):
         # Start at the next full schedule slot, after all sources have delivered at least once.
         state["trial_start"] = next_slot(now, 10)
+    if changed and state.get("trial_start"):
+        release = read(args.dist / "manifest.json")
+        release.update(trial_basis=state["trial_basis"], trial_start=state["trial_start"])
+        write(args.dist / "manifest.json", release)
     state["run_number"] = number
     write(state_file, state)
     elapsed = round(time.monotonic() - start, 2)

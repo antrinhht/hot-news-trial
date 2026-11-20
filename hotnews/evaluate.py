@@ -14,9 +14,9 @@ from pathlib import Path
 from urllib.parse import urlencode
 from zipfile import ZIP_STORED, ZipFile
 
-from .artifacts import github, list_artifacts
+from .artifacts import download, github, list_artifacts, trusted
 from .events import canonical_url, update_events
-from .pipeline import instant, new_state, registry, stamp, write
+from .pipeline import ROOT, instant, new_state, registry, stamp, write
 
 
 def percentile95(values):
@@ -42,7 +42,7 @@ def paged(path, field, params):
         page += 1
 
 
-def load_run(directory, run, artifact, sizes):
+def load_run(directory, run, artifact, sizes, expired=False):
     run_id = str(run["id"])
     file = directory / (run_id + ".json.gz")
     if file.exists():
@@ -51,12 +51,21 @@ def load_run(directory, run, artifact, sizes):
         if (
             old["run"].get("conclusion")
             and old.get("artifact_sizes") is not None
-            and old.get("artifact_id") == (artifact or {}).get("id")
+            and (
+                (not artifact and old.get("observation"))
+                or old.get("artifact_id") == (artifact or {}).get("id")
+            )
         ):
             return
     repo = os.environ["GITHUB_REPOSITORY"]
-    jobs = list(
-        paged(f"repos/{repo}/actions/runs/{run_id}/attempts/1/jobs", "jobs", {})
+    # An expired raw observation cannot be reconstructed from a jobs response.
+    # Avoid exhausting the API quota fetching a thousand such job lists after eviction.
+    jobs = (
+        []
+        if expired and not artifact
+        else list(
+            paged(f"repos/{repo}/actions/runs/{run_id}/attempts/1/jobs", "jobs", {})
+        )
     )
     entry = {
         "run": {
@@ -101,10 +110,122 @@ def load_run(directory, run, artifact, sizes):
     tmp.replace(file)
 
 
+OWNED_CACHE = ROOT.resolve() / ".runtime" / "trial-archive"
+INDEX_NAME = "_archive_state.json"
+RETENTION = timedelta(days=10)
+STUDY = timedelta(days=7)
+GRACE = timedelta(minutes=20)
+
+
+def archive_headers(directory):
+    """Read only files with the run ID and schema written by this program."""
+    headers = {}
+    for path in directory.glob("*.json.gz"):
+        run_id = path.name.removesuffix(".json.gz")
+        if not run_id.isascii() or not run_id.isdecimal() or path.is_symlink():
+            continue
+        try:
+            with gzip.open(path, "rt", encoding="utf-8") as inp:
+                entry = json.load(inp)
+            if str(entry["run"]["id"]) != run_id:
+                continue
+            obs = entry.get("observation", {})
+            at = instant(obs.get("as_of") or entry["run"]["created_at"])
+            headers[run_id] = {
+                "at": at,
+                "observed": bool(obs),
+                "trial_start": obs.get("trial_start")
+                if obs.get("trial_basis") == "public-v1"
+                else None,
+            }
+        except (OSError, ValueError, TypeError, KeyError, EOFError):
+            continue
+    return headers
+
+
+def selection(rows, start, now):
+    """Retain a rolling preflight or the fixed study, including one authoritative seed."""
+    if start is None:
+        return {rid for rid, row in rows.items() if now - RETENTION <= row["at"] <= now}
+    cutoff = start + STUDY + GRACE
+    keep = {
+        rid
+        for rid, row in rows.items()
+        if start <= row["at"] < cutoff and row["at"] <= now
+    }
+    seeds = [
+        (row["at"], rid)
+        for rid, row in rows.items()
+        if row.get("observed") and row["at"] < start
+    ]
+    if seeds:
+        keep.add(max(seeds)[1])
+    return keep
+
+
+def prune_cache(directory, headers, keep):
+    # Reject custom directories, junctions and symlinks, including symlinked cache parents.
+    if (
+        directory.resolve() != OWNED_CACHE
+        or directory.is_symlink()
+        or directory.is_junction()
+    ):
+        return False
+    changed = False
+    for rid in headers.keys() - keep:
+        path = directory / (rid + ".json.gz")
+        if path.resolve().parent == OWNED_CACHE and not path.is_symlink():
+            path.unlink()
+            changed = True
+    return changed
+
+
+def known_start(branch, metadata, headers):
+    local = [row["trial_start"] for row in headers.values() if row["trial_start"]]
+    if metadata.get("trial_start"):
+        local.append(metadata["trial_start"])
+    if local:
+        return instant(min(local))
+    # A checkpoint identifies the fixed trial even when the runner cache has been evicted.
+    # No post-trial observation archive is downloaded to rediscover its start.
+    for artifact in list_artifacts("checkpoint-v1"):
+        if artifact["workflow_run"]["head_branch"] == branch and trusted(artifact):
+            state = download(artifact, "state.json")
+            if state.get("trial_basis") == "public-v1" and state.get("trial_start"):
+                return instant(state["trial_start"])
+            break
+    return None
+
+
 def sync(directory, now):
     directory.mkdir(parents=True, exist_ok=True)
     repo = os.environ["GITHUB_REPOSITORY"]
     branch = os.environ.get("DEFAULT_BRANCH", "main")
+    index_path = directory / INDEX_NAME
+    metadata = (
+        json.loads(index_path.read_text(encoding="utf-8"))
+        if index_path.exists()
+        else {}
+    )
+    headers = archive_headers(directory)
+    start = known_start(branch, metadata, headers)
+    keep = selection(headers, start, now)
+    changed = prune_cache(directory, headers, keep)
+    if (
+        metadata.get("frozen")
+        and set(metadata.get("retained_ids", ())) <= keep
+        and all(
+            headers.get(rid, {}).get("observed")
+            for rid in metadata.get("observed_runs", {})
+        )
+    ):
+        print("Fixed trial is archived.")
+        return changed
+    outset = start if start else now - RETENTION
+    until = min(now, start + STUDY + GRACE) if start else now
+    seed_ids = [rid for rid in keep if start and headers[rid]["at"] < start]
+    # Request the short interval before entry to catch queued runs and retain the last seed.
+    lower = outset - GRACE if start else outset
     artifacts = {
         str(a["workflow_run"]["id"]): a
         for a in list_artifacts("trial-observation-v1", pages=20)
@@ -114,14 +235,18 @@ def sync(directory, now):
     for name in ("checkpoint-v1", "github-pages"):
         for artifact in list_artifacts(name, pages=12):
             sizes[str(artifact["workflow_run"]["id"])][name] = artifact["size_in_bytes"]
-    # Per-day queries stay below the REST maximum of 1000 results per filtered query.
     jobs = {}
-    for ago in range(10):
-        day = (now - timedelta(days=ago)).date().isoformat()
+    since = lower.date()
+    while since <= until.date():
         path = f"repos/{repo}/actions/workflows/publish.yml/runs"
-        for run in paged(path, "workflow_runs", {"branch": branch, "created": day}):
+        for run in paged(
+            path, "workflow_runs", {"branch": branch, "created": since.isoformat()}
+        ):
+            created = instant(run["created_at"])
             if (
-                run["path"] == ".github/workflows/publish.yml"
+                lower <= created <= until
+                and (not start or created < start + STUDY + GRACE)
+                and run["path"] == ".github/workflows/publish.yml"
                 and run["run_attempt"] == 1
                 and run["event"] in {"schedule", "workflow_dispatch"}
                 and run["head_branch"] == branch
@@ -129,16 +254,113 @@ def sync(directory, now):
                 == repo.lower()
             ):
                 jobs[str(run["id"])] = run
+        since += timedelta(days=1)
+    if start:
+        before = [
+            rid for rid, run in jobs.items() if instant(run["created_at"]) < start
+        ]
+        seeds = [(headers[rid]["at"], rid) for rid in seed_ids]
+        seeds.extend(
+            (instant(jobs[rid]["created_at"]), rid)
+            for rid in before
+            if rid in artifacts
+        )
+        seed = max(seeds)[1] if seeds else None
+        for rid in before:
+            if rid != seed and rid not in keep:
+                jobs.pop(rid)
+    unavailable = []
+    # If both raw artifact and cached observation disappeared, these specific runs cannot be replayed.
+    for rid, run in jobs.items():
+        expired = instant(run["created_at"]) < now - RETENTION
+        terminal = run["conclusion"] == "success" or (
+            expired and run["conclusion"] == "failure"
+        )
+        if (
+            rid not in artifacts
+            and not headers.get(rid, {}).get("observed")
+            and terminal
+            and instant(run["created_at"]) < now - timedelta(minutes=30)
+        ):
+            unavailable.append(
+                {
+                    "at": run["created_at"],
+                    "run_id": rid,
+                    "reason": "raw evidence unavailable",
+                }
+            )
     with ThreadPoolExecutor(max_workers=3) as pool:
-        list(
+        results = list(
             pool.map(
                 lambda pair: load_run(
-                    directory, pair[1], artifacts.get(pair[0]), sizes[pair[0]]
+                    directory,
+                    pair[1],
+                    artifacts.get(pair[0]),
+                    sizes[pair[0]],
+                    instant(pair[1]["created_at"]) < now - RETENTION,
                 ),
                 jobs.items(),
             )
         )
-    print(f"Synced metadata for {len(jobs)} workflow runs")
+    changed = any(results) or changed
+    headers = archive_headers(directory)
+    # Also pick up a trial that started between the checkpoint lookup and this sync.
+    if not start:
+        clocks = [row["trial_start"] for row in headers.values() if row["trial_start"]]
+        start = instant(min(clocks)) if clocks else None
+    keep = selection(headers, start, now)
+    changed = prune_cache(directory, headers, keep) or changed
+    if (
+        start
+        and start < now - RETENTION
+        and not any(
+            start <= headers[rid]["at"] < start + RETENTION and headers[rid]["observed"]
+            for rid in keep
+        )
+    ):
+        unavailable.append(
+            {
+                "at": stamp(start),
+                "run_id": None,
+                "reason": "no observations retained for the original window",
+            }
+        )
+    if start and metadata.get("retained_ids"):
+        for rid, at in metadata.get("observed_runs", {}).items():
+            if rid not in keep or not headers[rid]["observed"]:
+                unavailable.append(
+                    {
+                        "at": at,
+                        "run_id": rid,
+                        "reason": "expected cached evidence unavailable",
+                    }
+                )
+    # Incomplete jobs may still be uploading their evidence. A later sync revisits the tail.
+    frozen = bool(
+        start
+        and now >= start + STUDY + GRACE + timedelta(minutes=30)
+        and all(run["status"] == "completed" for run in jobs.values())
+    )
+    fresh = {
+        "version": 1,
+        "trial_start": stamp(start) if start else None,
+        "frozen": frozen,
+        "retained_ids": sorted(keep),
+        "observed_runs": {
+            rid: stamp(headers[rid]["at"])
+            for rid in sorted(keep)
+            if headers[rid]["observed"]
+        },
+        "unavailable": sorted(
+            {(i["at"], i["run_id"]): i for i in unavailable}.values(),
+            key=lambda item: (item["at"], str(item["run_id"])),
+        ),
+    }
+    if fresh != metadata:
+        write(index_path, fresh)
+        changed = True
+    print(f"Synced {len(jobs)} workflow runs. Retained {len(keep)} runs.")
+    return changed
 
 
 def replay(observations, sources):
@@ -493,7 +715,7 @@ def operational(entries, start, end, now, sources):
     }
 
 
-def report(entries, hours, now, sources, reviews=None):
+def report(entries, hours, now, sources, reviews=None, archive_index=None):
     entries = sorted(
         entries,
         key=lambda x: x.get("observation", {}).get("as_of") or x["run"]["created_at"],
@@ -506,6 +728,10 @@ def report(entries, hours, now, sources, reviews=None):
             and i["observation"].get("trial_basis") == "public-v1"
         }
     )
+    archive_index = archive_index or {}
+    if archive_index.get("trial_start"):
+        starts.append(archive_index["trial_start"])
+        starts.sort()
     if not starts:
         evidence_by_source = {}
         for e in entries:
@@ -589,6 +815,29 @@ def report(entries, hours, now, sources, reviews=None):
         if complete
         else None,
     }
+    unavailable = [
+        entry
+        for entry in archive_index.get("unavailable", [])
+        if start <= instant(entry["at"]) < end + GRACE
+    ]
+    archived = {str(e["run"]["id"]) for e in entries if e.get("observation")}
+    flagged = {i["run_id"] for i in unavailable}
+    for rid, at in archive_index.get("observed_runs", {}).items():
+        if (
+            rid not in archived
+            and rid not in flagged
+            and start <= instant(at) < end + GRACE
+        ):
+            unavailable.append(
+                {
+                    "run_id": rid,
+                    "at": at,
+                    "reason": "expected observation absent in replay archive",
+                }
+            )
+    if unavailable:
+        state = "evidence_unavailable"
+        gates = dict.fromkeys(gates)
     return {
         "status": state,
         "start": stamp(start),
@@ -599,6 +848,7 @@ def report(entries, hours, now, sources, reviews=None):
         "operations": operations,
         "comparison": ab,
         "acceptance": gates,
+        "unavailable_evidence": unavailable,
         "pages_url": os.environ.get("PAGE_URL"),
         "replay_commit": os.environ.get("GITHUB_SHA"),
         "validated_additional": validated,
@@ -636,6 +886,12 @@ def markdown(r):
         "| Nguồn | Thành công / đã gọi | Rỗng | Lỗi | Cooldown | Khoảng trống tối đa (phút) |",
         "|---|---:|---:|---:|---:|---:|",
     ]
+    if r.get("unavailable_evidence"):
+        lines[3:3] = [
+            "",
+            f"Thiếu bằng chứng đã lưu cho {len(r['unavailable_evidence'])} lượt hoặc khoảng thời gian. Các số dưới đây chỉ phản ánh phần dữ liệu còn lại.",
+            "",
+        ]
     for sid, v in met["sources"].items():
         c = v["counts"]
         lines.append(
@@ -658,6 +914,9 @@ def markdown(r):
 def archive_window(directory, destination, start, end):
     """Bundle original snapshots plus trailing observer checks for an offline rerun."""
     with ZipFile(destination, "w", compression=ZIP_STORED) as bundle:
+        index = directory / INDEX_NAME
+        if index.is_file():
+            bundle.write(index, INDEX_NAME)
         for path in sorted(directory.glob("*.json.gz")):
             with gzip.open(path, "rt", encoding="utf-8") as source:
                 row = json.load(source)
@@ -680,9 +939,23 @@ def main():
     args = argv.parse_args()
     now = datetime.now(UTC)
     if args.sync:
-        sync(args.archive, now)
+        changed = sync(args.archive, now)
+        if "GITHUB_OUTPUT" in os.environ:
+            with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+                out.write("cache_changed=" + str(changed).lower() + "\n")
+    index_path = args.archive / INDEX_NAME
+    archive_index = (
+        json.loads(index_path.read_text(encoding="utf-8"))
+        if index_path.is_file()
+        else {}
+    )
     entries = []
     for path in sorted(args.archive.glob("*.json.gz")):
+        if (
+            "retained_ids" in archive_index
+            and path.name.removesuffix(".json.gz") not in archive_index["retained_ids"]
+        ):
+            continue
         with gzip.open(path, "rt", encoding="utf-8") as inp:
             entries.append(json.load(inp))
     reviews = (
@@ -690,7 +963,7 @@ def main():
     )
     args.output.mkdir(parents=True, exist_ok=True)
     for hours in (48, 168):
-        result = report(entries, hours, now, registry(), reviews)
+        result = report(entries, hours, now, registry(), reviews, archive_index)
         write(args.output / f"report-{hours}h.json", result)
         (args.output / f"report-{hours}h.md").write_text(
             markdown(result), encoding="utf-8"
