@@ -7,6 +7,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 import re
 import sqlite3
@@ -14,6 +15,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
@@ -125,6 +127,17 @@ def _article(source, row):
             title = summary[:240] + ("…" if len(summary) > 240 else "")
     item = {"title": title, "url": url, "guid": row.get("guid") or None,
             "source_time": _utc(row.get("published_at"))}
+    # Only direct links to identifiable official documents count as primary evidence.
+    link = urlsplit(url)
+    document_paths = {
+        "federalreserve.gov": r"/newsevents/pressreleases/[a-z]+\d{8}[a-z]?\.htm",
+        "sec.gov": r"/Archives/edgar/data/\d+/[0-9-]+/[^/]+\.(?:htm|html|pdf)",
+        "supremecourt.gov": r"/opinions/\d{2}pdf/[^/]+\.pdf",
+        "ec.europa.eu": r"/commission/presscorner/detail/[a-z]{2}/[a-z]+_\d+_\d+",
+    }
+    pattern = document_paths.get((link.hostname or "").removeprefix("www."))
+    if link.scheme == "https" and pattern and re.fullmatch(pattern, link.path, re.I):
+        item["primary_url"] = url
     if row.get("rank") is not None:
         item["rank"] = row["rank"]
     if source["kind"] == "editorial":
@@ -223,6 +236,19 @@ def _caixin(source, upstream, binary, work):
         rows = json.loads(cmd.stdout)
         items = (_article(source, row) for row in rows)
         return _result([i for i in items if i is not None])
+    except HTTPError as exc:
+        failure = _failed(f"Caixin Global via Google News: {exc}")
+        retry = exc.headers.get("Retry-After", "").strip()
+        if retry:
+            try:
+                if retry.isdecimal():
+                    failure["retry_after_seconds"] = int(retry)
+                else:
+                    at = parsedate_to_datetime(retry)
+                    failure["retry_after_seconds"] = max(0, int((at - datetime.now(timezone.utc)).total_seconds()))
+            except (ValueError, OverflowError, TypeError):
+                pass
+        return failure
     except (OSError, ValueError, ET.ParseError, subprocess.SubprocessError) as exc:
         return _failed(f"Caixin Global via Google News: {exc}")
 

@@ -17,6 +17,7 @@ from urllib.parse import unquote_plus, urlsplit, urlunsplit
 
 ALIASES = Path(__file__).resolve().parents[1] / "config" / "aliases.json"
 WINDOW = timedelta(hours=48)
+RULE_VERSION = 2
 TRACKING = {"fbclid", "gclid", "mc_cid", "mc_eid", "at_medium", "at_campaign", "traffic_source"}
 ROUNDUP = re.compile(r"\b(?:roundup|live updates|news digest|top stories|news briefing)\b|新闻汇总|要闻汇总|一周回顾|新闻早报|盘点", re.I)
 MONTHS = {k.lower(): n for n in range(1, 13) for k in (calendar.month_name[n], calendar.month_abbr[n])}
@@ -33,6 +34,16 @@ UNIT_COUNT = re.compile(AMOUNT + r"(cars?\b|vehicles?\b|aircraft\b|planes?\b|辆
 MISSIONS = re.compile(r"(?:artemis\s*|阿尔忒弥斯\s*)([ivx]{1,5}\b|\d+)", re.I)
 ROMAN = {x: str(i) for i, x in enumerate(("", "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"))}
 MONTH_DAY = re.compile(rf"\b(?:{MONTH_PATTERN})\.?\s+\d{{1,2}}(?:st|nd|rd|th)?\b|\b\d{{1,2}}\s+(?:{MONTH_PATTERN})\b")
+NON_REPORT = re.compile(r"\?|？|^(why|how|what|analysis|commentary|in depth|inside)\b|\b(?:whether|reacts? to|draws reaction|despite|ahead of|set to|plans? to|to go public|may go public)\b|\.\s+(?:and|meanwhile)[,: ]|早报[｜|：:]|有望|计划|预计|怎么看", re.I)
+UNCERTAIN = re.compile(r"\b(?:not|never|would|might|could|may|unlikely|denies|denied|overturned|appeals?)\b|否认|未曾|可能|辟谣", re.I)
+ISSUERS = {"anthropic", "openai", "google", "apple", "microsoft", "nvidia", "samsung", "amazon",
+           "tesla", "byd", "boeing", "airbus", "tencent", "huawei", "alibaba"}
+PUBLIC_LISTING = re.compile(r"\b(?:stock market debut|nasdaq debut|nyse debut)\b|敲钟上市")
+COURT_DECISION = re.compile(r"\bcourt (?:has )?(?:finds?|found|rules?|ruled)\b|法院(?:裁定|判定)|法院认定")
+PERSON = r"[A-Z][a-zA-Z'’-]+(?:\s+[A-Z][a-zA-Z'’-]+){1,3}"
+PARDON = re.compile(rf"(?i:posthumously pardon(?:s|ed)?)\s+(?:[A-Z]{{2,4}}\s+)?(?:[a-z-]+\s+){{0,4}}(?P<after>{PERSON})|(?i:grant(?:s|ed)?)\s+(?P<before>{PERSON})\s+(?i:a posthumous pardon)")
+SPECIES = r"hippo(?:potamus)?|elephant|giraffe|panda|gorilla|tiger|lion|rhino(?:ceros)?"
+ANIMAL_DEATH = re.compile(rf"(?:(?P<first>[A-Z][a-z'-]+)\s+(?i:the)\s+(?P<s1>(?i:{SPECIES}))|(?P<s2>(?i:{SPECIES}))\s+(?P<last>[A-Z][a-z'-]+))\s+(?i:(?:has\s+)?(?:died|dies))\b")
 
 
 def _timestamp(value):
@@ -132,6 +143,36 @@ def _occurrence_day(text, reference):
         return reference.isoformat(), False
 
 
+def _reported_fact(title, text, entities):
+    """Narrow predicates with a named subject and an occurrence discriminator.
+
+    Keep analysis, roundup and future headlines out of asserted fact matches.
+    These keys identify events, not general similarity between headlines.
+    """
+    if NON_REPORT.search(text) or UNCERTAIN.search(MONTH_DAY.sub("", text)) or ROUNDUP.search(text):
+        return None
+    animal = ANIMAL_DEATH.search(title)
+    if animal:
+        species = (animal["s1"] or animal["s2"]).casefold()
+        species = {"hippopotamus": "hippo", "rhinoceros": "rhino"}.get(species, species)
+        name = (animal["first"] or animal["last"]).casefold()
+        return "animal_death", {"animal:" + name}, {"species:" + species}
+    pardon = PARDON.search(title)
+    if pardon and entities:
+        name = (pardon["before"] or pardon["after"]).casefold()
+        return "pardon", entities, {"posthumous-recipient:" + name}
+    genocide = "committed genocide" in text or "构成种族灭绝" in text or "犯下种族灭绝" in text
+    if genocide and COURT_DECISION.search(text) and len(entities) >= 2:
+        return "genocide_ruling", entities, {"offence:genocide"}
+    listing = PUBLIC_LISTING.search(text) or (
+        "shares open for trading" in text and ("initial public offering" in text or "ipo" in text))
+    issuers = ISSUERS & entities
+    if listing and len(issuers) == 1:
+        venues = {"exchange:" + x for x in ("nasdaq", "nyse", "hkex") if re.search(rf"\b{x}\b", text)}
+        return "public_listing", issuers, {"transaction:first-listing"} | venues
+    return None
+
+
 def _features(title, clock):
     text = _normalized(title)
     # A calendar month ("May 6") must not be interpreted as a modal ("may cut").
@@ -139,6 +180,12 @@ def _features(title, clock):
     found = {key: sorted(name for name, pattern in group.items()
                          if pattern.search(without_dates if key == "modalities" else text))
              for key, group in _patterns().items()}
+    fact = _reported_fact(title, text, set(found["entities"]))
+    if fact and not found["actions"]:
+        action, entities, discriminator = fact
+        found["actions"] = [action]
+        found["entities"] = sorted(entities)
+        found["details"] = sorted(set(found["details"]) | discriminator)
     # "recalls ambassador" is one action, not a simultaneous product recall.
     if "recall_ambassador" in found["actions"] and "recalled" in found["actions"]:
         found["actions"].remove("recalled")
@@ -196,6 +243,18 @@ def _same_signature(left, right):
     common = entities_a & entities_b
     if not common:
         return False
+    # A bilateral meeting and a trilateral summit are separate occurrences.
+    if left["actions"] == ["meet"]:
+        leaders = {"xi", "trump", "putin"}
+        if (entities_a & leaders) != (entities_b & leaders):
+            return False
+    # Court findings about different parties or IPOs of different issuers can
+    # share the same date and a generic financial/legal phrase.
+    if left["actions"][0] in {"genocide_ruling", "public_listing"}:
+        if len(common) < (2 if left["actions"][0] == "genocide_ruling" else 1):
+            return False
+        if entities_a != entities_b:
+            return False
     a, b = set(left["details"]), set(right["details"])
     # A conflicting amount/version blocks a match even if the general subject is shared.
     typed = {s.split(":", 1)[0] for s in a | b if ":" in s}
@@ -212,7 +271,7 @@ def _same_signature(left, right):
 
 
 def _empty_engine():
-    return {"items": {}, "aliases": {}, "clusters": {}, "last_good": {}}
+    return {"items": {}, "aliases": {}, "clusters": {}, "last_good": {}, "rule_version": RULE_VERSION}
 
 
 def _aliases(source_id, raw, url):
@@ -232,6 +291,7 @@ def _report_time(item):
 def _anchor(item):
     links = {item["canonical_url"], item["primary_url"]}
     return {"links": sorted(link for link in links if _specific_link(link)),
+            "title": item["title"], "clock": _report_time(item),
             "features": _features(item["title"], _report_time(item))}
 
 
@@ -242,6 +302,8 @@ def _public_item(item):
 def recover_engine(feed):
     """Recover IDs and visible membership. Unknown undated input starts cold."""
     engine = _empty_engine()
+    # Published records may have been produced by an earlier rule version.
+    engine["rule_version"] = feed.get("grouping_version", 0)
     for event in feed.get("events", []):
         eid = event["event_id"]
         for raw in event.get("items", []):
@@ -251,7 +313,7 @@ def recover_engine(feed):
             for alias in _aliases(item["source_id"], item, item["canonical_url"]):
                 engine["aliases"][alias] = iid
             engine["items"][iid] = item
-            if eid not in engine["clusters"]:
+            if eid not in engine["clusters"] or _id("e-", iid) == eid:
                 engine["clusters"][eid] = _anchor(item)
     return engine
 
@@ -263,19 +325,73 @@ def _candidate_keys(anchor):
         yield from ((f["actions"][0], name) for name in f["entities"])
 
 
+def _match_reason(anchor, other):
+    if (anchor["features"]["roundup"] == other["features"]["roundup"]
+            and set(anchor["links"]).intersection(other["links"])):
+        return "Cùng liên kết bài hoặc tài liệu cụ thể"
+    if _same_signature(anchor["features"], other["features"]):
+        return "Khớp thực thể, hành động, chi tiết và thời điểm"
+    return ""
+
+
 def _find_cluster(anchor, lookup, clusters):
     candidates = {eid for key in _candidate_keys(anchor) for eid in lookup.get(key, ())}
-    if anchor["features"]["roundup"]:
-        # Two copies of the same roundup URL can share a card, but cannot join another event.
-        candidates = {eid for eid in candidates if clusters[eid]["features"]["roundup"]}
-    matches = {}
-    for eid in candidates:
-        other = clusters[eid]
-        if set(anchor["links"]).intersection(other["links"]):
-            matches[eid] = "Cùng liên kết bài hoặc tài liệu cụ thể"
-        elif _same_signature(anchor["features"], other["features"]):
-            matches[eid] = "Khớp thực thể, hành động, chi tiết và thời điểm"
+    matches = {eid: reason for eid in candidates if (reason := _match_reason(anchor, clusters[eid]))}
     return next(iter(matches.items())) if len(matches) == 1 else (None, "")
+
+
+def _upgrade_anchors(engine):
+    """Recheck saved anchors exactly once after a grouping-rule update.
+
+    Merge a component only when every pair of anchors agrees directly. Thus an
+    ambiguous intermediary cannot bridge separate events during migration.
+    """
+    if engine.get("rule_version") == RULE_VERSION:
+        return
+    groups = defaultdict(list)
+    for item in engine["items"].values():
+        groups[item["event_id"]].append(item)
+    neighbors = defaultdict(dict)
+    lookup = defaultdict(set)
+    clusters = engine["clusters"]
+    for eid, members in groups.items():
+        old = clusters[eid]
+        if "title" in old:
+            anchor = {**old, "features": _features(old["title"], old["clock"])}
+        else:
+            # v1 stored features but no anchor text; find the item which generated its ID.
+            first = min(members, key=lambda i: (_id("e-", i["item_id"]) != eid,
+                                                i["first_seen_at"], i["item_id"]))
+            anchor = _anchor(first)
+        clusters[eid] = anchor
+        keys = list(_candidate_keys(anchor))
+        candidates = {other for key in keys for other in lookup[key]}
+        for other in candidates:
+            reason = _match_reason(anchor, clusters[other])
+            if reason:
+                neighbors[eid][other] = neighbors[other][eid] = reason
+        for key in keys:
+            lookup[key].add(eid)
+    remaining = set(neighbors)
+    while remaining:
+        start = min(remaining)
+        component, stack = {start}, [start]
+        while stack:
+            new = set(neighbors[stack.pop()]) - component
+            component.update(new)
+            stack.extend(new)
+        remaining -= component
+        if any(len(neighbors[eid]) != len(component) - 1 for eid in component):
+            continue
+        def priority(eid):
+            return -len(groups[eid]), min(i["first_seen_at"] for i in groups[eid]), eid
+        survivor = min(component, key=priority)
+        for loser in component - {survivor}:
+            for item in groups[loser]:
+                item["event_id"] = survivor
+                item["merge_reason"] = neighbors[loser][survivor]
+            del clusters[loser]
+    engine["rule_version"] = RULE_VERSION
 
 
 def _ingest(engine, results, sources, now):
@@ -380,6 +496,7 @@ def update_events(state, results, sources, as_of):
     if not state.get("engine"):
         state["engine"] = _empty_engine()
     engine = state["engine"]
+    _upgrade_anchors(engine)
     _ingest(engine, results, sources, now)
     cutoff = _iso(now - WINDOW)
     clock = _iso(now)
@@ -402,6 +519,6 @@ def update_events(state, results, sources, as_of):
     views.sort(key=lambda e: e["latest_at"], reverse=True)
     hot.sort(key=lambda e: e["latest_at"], reverse=True)
     hot.sort(key=lambda e: e["heat"], reverse=True)
-    return {"events": views, "latest": [e["event_id"] for e in views],
+    return {"grouping_version": RULE_VERSION, "events": views, "latest": [e["event_id"] for e in views],
             "hot": [e["event_id"] for e in hot[:10]],
             "selected": [e["event_id"] for e in views if e["selected_reason"]]}

@@ -34,3 +34,11 @@ Chọn **GitHub Actions** làm nguồn Pages. Workflow **Hot news** thu thập t
 - Lượt có một nguồn lỗi vẫn hiển thị dữ liệu còn hạn của nguồn đó và tình trạng nguồn. Nguồn lỗi được thử lại sau ít nhất 30 phút hoặc chu kỳ bình thường nếu chu kỳ dài hơn.
 
 [Cấu hình nguồn](config/sources.yaml) · [Kế hoạch và điều kiện nghiệm thu](PLAN.md) · [Các lần chạy đánh giá](https://github.com/antrinhht/hot-news-trial/actions/workflows/evaluate.yml)
+
+## Bằng chứng triển khai ban đầu
+
+Trên GitHub runner ngày 20/11/2026, 13 đầu tin trả bài trong lượt preflight. Đầu tin Caixin Global qua Google News trả HTTP 429. Các artifact của lượt này giữ số bài, link mẫu và trạng thái từng nguồn. [Preflight 14 nguồn](https://github.com/antrinhht/hot-news-trial/actions/runs/44716959169)
+
+Job deploy đã xác nhận manifest công khai trên Pages. Workflow diễn tập riêng đã kiểm tra snapshot không đổi, lỗi một nguồn, khôi phục sau một bước phát hành bị từ chối có mô phỏng và dựng lại trạng thái từ JSON công khai. [Bản phát hành đầu](https://github.com/antrinhht/hot-news-trial/actions/runs/44717442678) · [Diễn tập khôi phục](https://github.com/antrinhht/hot-news-trial/actions/runs/44717783960)
+
+Mỗi lượt đánh giá đính kèm báo cáo Markdown và JSON cho hai cửa sổ 48 giờ và 7 ngày. Báo cáo ban đầu ghi 13/14 nguồn. [Báo cáo ban đầu](https://github.com/antrinhht/hot-news-trial/actions/runs/44717790082)

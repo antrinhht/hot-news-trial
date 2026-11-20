@@ -29,6 +29,9 @@
     "nasa": ["NASA", "美国宇航局", "美国国家航空航天局", "美国航天局"],
     "spacex": ["SpaceX", "太空探索技术公司"],
     "openai": ["OpenAI", "开放人工智能公司"],
+    "anthropic": ["Anthropic"],
+    "myanmar": ["Myanmar", "Burma", "缅甸"],
+    "rohingya": ["Rohingya", "罗兴亚"],
     "google": ["Google", "谷歌"],
     "apple": ["Apple", "苹果公司", "苹果"],
     "microsoft": ["Microsoft", "微软"],
@@ -52,7 +55,8 @@
     "london": ["London", "伦敦"],
     "california": ["California", "加利福尼亚", "加州"],
     "newyork": ["New York", "纽约"],
-    "xi": ["Xi Jinping", "习近平"],
+    "xi": ["Xi Jinping", "Xi", "习近平"],
+    "putin": ["Vladimir Putin", "Putin", "普京"],
     "trump": ["Donald Trump", "Trump", "特朗普", "川普"],
     "taipei": ["Taipei", "台北"]
   },
@@ -77,7 +81,7 @@
     "landfall": ["makes landfall", "made landfall", "登陆"],
     "wins_game": ["beats", "defeats", "击败", "战胜"],
     "ceasefire": ["agrees ceasefire", "agree ceasefire", "enters ceasefire", "agree to a ceasefire", "达成停火", "停火协议"],
-    "meet": ["meets", "met with", "hold talks", "举行会谈", "会晤"],
+    "meet": ["meets", "met with", "hold talks", "举行会谈", "会晤", "会见"],
     "outbreak": ["declares an outbreak", "declares outbreak", "宣布暴发", "宣布疫情"],
     "recall_ambassador": ["recalls ambassador", "recalls its ambassador", "召回大使"]
   },

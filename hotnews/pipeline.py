@@ -130,7 +130,8 @@ def update_health(sources, state, results, now):
                 status = "empty"
             info["status"] = status
             info["next_due_at"] = (next_slot(now, src["interval_minutes"]) if status in {"changed", "unchanged"}
-                                   else stamp(now + timedelta(minutes=max(src["interval_minutes"], 30))))
+                                   else stamp(now + timedelta(seconds=max(src["interval_minutes"] * 60, 1800,
+                                                                         result.get("retry_after_seconds", 0)))))
         statuses.append({"source_id": sid, "status": status, "count": len(items),
                          "error": (result or {}).get("error", ""), "sample_url": items[0]["url"] if items else None,
                          "time_kind": ("source" if items[0].get("source_time") else "first_seen") if items else None,

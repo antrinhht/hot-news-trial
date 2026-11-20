@@ -96,7 +96,7 @@ def _read_source(source):
         return res.read(MAX_FEED_BYTES + 1)
 
 
-def sample(base, *, as_of=None):
+def sample(base, *, as_of=None, source_health=None):
     now = as_of or _now()
     result = {"observed_at": stamp(now), "public_items": [], "public_ids": [], "public_available": False,
               "candidates": [], "polls": []}
@@ -117,6 +117,12 @@ def sample(base, *, as_of=None):
         sid = source["source_id"]
         poll = {"source_id": sid, "observer_interval_minutes": frequency,
                 "source_interval_minutes": source["interval_minutes"]}
+        previous = (source_health or {}).get(sid, {})
+        if (previous.get("status") in {"failed", "empty"}
+                and previous.get("next_due_at", "") > stamp(now)):
+            poll["status"] = "cooldown"
+            result["polls"].append(poll)
+            continue
         try:
             payload = _read_source(source)
             observed = as_of or _now()
@@ -135,4 +141,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--page", required=True)
     args = parser.parse_args()
-    write(Path(".runtime/sample/observer.json"), sample(args.page))
+    checkpoint = Path(".runtime/checkpoint/state.json")
+    import json
+    health = json.loads(checkpoint.read_text(encoding="utf-8"))["sources"] if checkpoint.exists() else {}
+    write(Path(".runtime/sample/observer.json"), sample(args.page, source_health=health))
