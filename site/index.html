@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f8f7f3">
+  <title>Điểm tin quốc tế</title>
+  <link rel="icon" type="image/svg+xml" href="./mark.svg">
+  <link rel="stylesheet" href="./styles.css">
+  <script defer src="./app.js"></script>
+</head>
+<body>
+  <a class="skip" href="#articles">Đi tới danh sách tin</a>
+  <div class="sheet">
+    <header class="masthead">
+      <div class="identity">
+        <img alt="" aria-hidden="true" width="41" height="41" src="./mark.svg">
+        <h1>Điểm tin <span>quốc tế</span></h1>
+      </div>
+      <div class="edition"><span>Bản xuất bản gần nhất</span><time id="published">Đang tải…</time></div>
+    </header>
+    <main class="workspace">
+      <section class="news" aria-label="Bảng tin">
+        <div id="views" class="views" role="group" aria-label="Cách xếp tin">
+          <button type="button" data-view="latest" aria-pressed="true">Mới nhất</button>
+          <button type="button" data-view="hot" aria-pressed="false">Tin nóng</button>
+          <button type="button" data-view="selected" aria-pressed="false">Tuyển chọn</button>
+        </div>
+        <div class="tools">
+          <div id="markets" class="markets" role="group" aria-label="Thị trường nguồn">
+            <button type="button" data-market="all" aria-pressed="true">Tất cả</button>
+            <button type="button" data-market="CN" aria-pressed="false">Trung Quốc</button>
+            <button type="button" data-market="US" aria-pressed="false">Mỹ</button>
+            <button type="button" data-market="intl" aria-pressed="false">Quốc tế</button>
+          </div>
+          <span class="count" id="event-count"></span>
+        </div>
+        <div id="notice" role="status"></div>
+        <section id="articles" tabindex="-1" aria-label="Danh sách sự kiện">
+          <p class="empty">Đang tải bảng tin…</p>
+        </section>
+        <button class="more" type="button" id="more" hidden>Xem thêm sự kiện</button>
+        <noscript>Bật JavaScript để đọc bảng tin. Bạn cũng có thể mở <a href="./feed.json">dữ liệu bảng tin</a>.</noscript>
+      </section>
+      <aside class="rail" aria-labelledby="source-title">
+        <header class="rail-header"><h2 id="source-title">Nguồn theo dõi</h2><span id="source-count"></span></header>
+        <p class="rail-note">Trạng thái tại thời điểm xuất bản.</p>
+        <div id="sources"></div>
+        <button type="button" class="refresh" id="refresh">Tải lại bảng tin <span aria-hidden="true">↻</span></button>
+      </aside>
+    </main>
+  </div>
+</body>
+</html>

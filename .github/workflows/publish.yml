@@ -1,0 +1,95 @@
+name: Hot news
+on:
+  schedule:
+    - cron: '3,13,23,33,43,53 * * * *'
+  workflow_dispatch:
+    inputs:
+      preflight:
+        description: Collect all due sources and save the checkpoint without publishing
+        type: boolean
+        default: false
+permissions: {}
+concurrency:
+  group: hot-news-pages
+  cancel-in-progress: false
+env:
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  PAGE_URL: https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/
+jobs:
+  build:
+    if: github.ref_name == github.event.repository.default_branch && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      changed: ${{ steps.cycle.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - uses: actions/checkout@v4
+        with:
+          repository: sansan0/TrendRadar
+          ref: 86584f5544c66d4e22132f9b87c44a7ea3a32fea
+          path: .upstream
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          cache-dependency-glob: .upstream/uv.lock
+      - run: uv sync --frozen --no-dev --python 3.12
+        working-directory: .upstream
+      - name: Offline acceptance
+        if: ${{ !inputs.preflight }}
+        env:
+          TRENDRADAR_DIR: ${{ github.workspace }}/.upstream
+        run: .upstream/.venv/bin/python -m unittest discover -s tests -v
+      - name: Restore checkpoint
+        run: python -m hotnews.artifacts restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Observe a source and the public site
+        run: python -m hotnews.observer --page "$PAGE_URL"
+      - id: cycle
+        name: Collect, group and render
+        run: .upstream/.venv/bin/python -m hotnews.pipeline --upstream .upstream --page "$PAGE_URL"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: checkpoint-v1
+          path: .runtime/checkpoint/state.json
+          include-hidden-files: true
+          retention-days: 3
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: trial-observation-v1
+          path: .runtime/sample/
+          include-hidden-files: true
+          retention-days: 10
+          if-no-files-found: error
+      - if: steps.cycle.outputs.changed == 'true' && !inputs.preflight
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+  deploy:
+    needs: build
+    if: needs.build.outputs.changed == 'true' && github.run_attempt == 1 && !inputs.preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    permissions:
+      pages: write
+      id-token: write
+      contents: read
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with: {persist-credentials: false}
+      - id: pages
+        uses: actions/deploy-pages@v4
+      - run: python -m hotnews.artifacts verify --page "$PAGE_URL"
