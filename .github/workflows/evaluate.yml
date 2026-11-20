@@ -26,7 +26,7 @@ jobs:
           restore-keys: trial-archive-v1-
       - name: Collect trusted observations and replay both source sets
         id: evaluate
-        run: python -m hotnews.evaluate --sync
+        run: python -m hotnews.evaluate --sync --review-dir reports/reviews
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}

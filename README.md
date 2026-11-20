@@ -46,3 +46,9 @@ Job deploy đã xác nhận manifest công khai trên Pages. Workflow diễn t�
 Mỗi lượt đánh giá đính kèm báo cáo Markdown và JSON cho hai cửa sổ 48 giờ và 7 ngày. Báo cáo ban đầu ghi 13/14 nguồn. [Báo cáo ban đầu](https://github.com/antrinhht/hot-news-trial/actions/runs/44717790082)
 
 Trong lượt kiểm tra đầu, bảy nguồn cho một sự kiện được nhiều tòa soạn đưa tin. Danh mục mở rộng cho bốn sự kiện. [Mẫu đối chiếu và cách tái lập](reports/initial-review.md)
+
+## Bàn giao QA khi kết thúc cửa sổ đo
+
+Tải artifact `trial-report` trong lượt đánh giá sau 18:13 giờ Việt Nam ngày 22/11. Trong `report-48h.json`, kiểm tra các bài thuộc `review_candidates` và các sự kiện đối chiếu tăng thêm. Đọc tiêu đề, liên kết và phần ghi công cho từng cụm, ghi quyết định theo `event_id` trong một JSON dạng `{"event_id": "correct"}`. Các nhãn lỗi được hỗ trợ là `false_merge`, `wire_duplicate` và `photo_credit`. Cụm còn thiếu bằng chứng để trống.
+
+Đặt quyết định đã xác minh của kỳ này ở `reports/reviews/20261120-1053-48h.json` trên nhánh chính. Với cửa sổ 7 ngày, dùng `20261120-1053-168h.json`. Workflow đọc riêng đúng kỳ, tính lại kết luận và lưu cả JSON lẫn Markdown. Các nhận xét ban đầu ở trên không được tự động tính vào mẫu nghiệm thu chính thức.

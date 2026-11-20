@@ -962,6 +962,7 @@ def main():
     argv.add_argument("--archive", type=Path, default=Path(".runtime/trial-archive"))
     argv.add_argument("--output", type=Path, default=Path(".runtime/evaluation"))
     argv.add_argument("--reviews", type=Path, help="JSON of event_id -> QA decision")
+    argv.add_argument("--review-dir", type=Path, help="Read QA decisions for each exact trial start and duration")
     args = argv.parse_args()
     now = datetime.now(UTC)
     if args.sync:
@@ -989,7 +990,18 @@ def main():
     )
     args.output.mkdir(parents=True, exist_ok=True)
     for hours in (48, 168):
-        result = report(entries, hours, now, registry(), reviews, archive_index)
+        window_reviews = reviews
+        if args.review_dir and archive_index.get("trial_start") and not args.reviews:
+            name = instant(archive_index["trial_start"]).strftime("%Y%m%d-%H%M")
+            decision_file = args.review_dir / f"{name}-{hours}h.json"
+            if decision_file.is_file():
+                window_reviews = json.loads(decision_file.read_text(encoding="utf-8"))
+                if not isinstance(window_reviews, dict) or not all(
+                    value in {"correct", "false_merge", "wire_duplicate", "photo_credit"}
+                    for value in window_reviews.values()
+                ):
+                    raise ValueError("Invalid QA decision file: " + str(decision_file))
+        result = report(entries, hours, now, registry(), window_reviews, archive_index)
         write(args.output / f"report-{hours}h.json", result)
         (args.output / f"report-{hours}h.md").write_text(
             markdown(result), encoding="utf-8"
