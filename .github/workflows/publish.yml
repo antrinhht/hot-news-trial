@@ -56,7 +56,12 @@ jobs:
         run: python -m hotnews.observer --page "$PAGE_URL"
       - id: cycle
         name: Collect, group and render
-        run: .upstream/.venv/bin/python -m hotnews.pipeline --upstream .upstream --page "$PAGE_URL"
+        env:
+          PREFLIGHT: ${{ inputs.preflight }}
+        run: |
+          extra=()
+          if [ "$PREFLIGHT" = true ]; then extra+=(--preflight); fi
+          .upstream/.venv/bin/python -m hotnews.pipeline --upstream .upstream --page "$PAGE_URL" "${extra[@]}"
       - uses: actions/upload-artifact@v4
         with:
           name: checkpoint-v1

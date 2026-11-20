@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 import subprocess
 import time
-from zipfile import ZipFile
+from zipfile import BadZipFile, ZipFile
 
 from .pipeline import fetch_public, valid_state, write
 
@@ -56,7 +56,7 @@ def restore():
                 write(".runtime/checkpoint/state.json", state)
                 print("Recovered checkpoint from run", artifact["workflow_run"]["id"])
                 return
-        except (ValueError, OSError, KeyError, subprocess.CalledProcessError) as exc:
+        except (ValueError, OSError, KeyError, BadZipFile, subprocess.CalledProcessError) as exc:
             print("Invalid checkpoint", artifact["id"], type(exc).__name__)
     print("Cold start; pipeline will check the public snapshot.")
 

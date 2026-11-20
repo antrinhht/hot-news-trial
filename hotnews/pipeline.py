@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
@@ -69,9 +70,33 @@ def new_state():
 
 
 def valid_state(state):
-    return (isinstance(state, dict) and state.get("schema_version") == SCHEMA
+    if not (isinstance(state, dict) and state.get("schema_version") == SCHEMA
             and isinstance(state.get("sources"), dict) and isinstance(state.get("engine"), dict)
-            and isinstance(state.get("run_number"), int))
+            and isinstance(state.get("run_number"), int)):
+        return False
+    try:
+        for info in state["sources"].values():
+            if not isinstance(info, dict):
+                return False
+            for key in ("last_good_at", "next_due_at"):
+                if info.get(key):
+                    instant(info[key])
+        engine = state["engine"]
+        if not engine:
+            return not any(x.get("last_good_at") for x in state["sources"].values())
+        if not all(isinstance(engine.get(k), dict) for k in ("items", "aliases", "clusters", "last_good")):
+            return False
+        for key, item in engine["items"].items():
+            if key != item["item_id"] or item["event_id"] not in engine["clusters"]:
+                return False
+            instant(item["first_seen_at"])
+            instant(item["last_seen_at"])
+        for anchor in engine["clusters"].values():
+            if not isinstance(anchor["features"], dict) or not isinstance(anchor["links"], list):
+                return False
+        return all(i in engine["items"] for i in engine["aliases"].values())
+    except (KeyError, TypeError, ValueError, AttributeError, OverflowError):
+        return False
 
 
 def next_slot(now, minutes):
@@ -126,11 +151,12 @@ def build_cycle(state, sources, results, now, dist, public_manifest, release_id)
     ui = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((ROOT / "site").rglob("*")) if p.is_file()}
     value = digest([ui, content])
     good = any(row["status"] in {"changed", "unchanged"} for row in statuses)
+    bootstrap = not results and public_manifest is None and bool(projection["events"])
     different = value != (public_manifest or {}).get("publish_hash")
-    changed = good and different
+    changed = (good or bootstrap) and different
     if changed:
         shutil.copytree(ROOT / "site", dist, dirs_exist_ok=True)
-        write(dist / "feed.json", {**content, "published_at": stamp(now)})
+        write(dist / "feed.json", {**content, "published_at": stamp(now), "release_id": release_id, "publish_hash": value})
         write(dist / "manifest.json", {"schema_version": SCHEMA, "release_id": release_id, "publish_hash": value})
     return changed, statuses, value
 
@@ -143,7 +169,10 @@ def main():
     parser.add_argument("--work", type=Path, default=Path(".runtime"))
     parser.add_argument("--dist", type=Path, default=Path("dist"))
     parser.add_argument("--page", default="")
+    parser.add_argument("--preflight", action="store_true")
     args = parser.parse_args()
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
     start = time.monotonic()
     now = datetime.now(timezone.utc)
     src = registry()
@@ -161,17 +190,24 @@ def main():
     except (OSError, ValueError) as exc:
         manifest_known, public_manifest = False, None
         print("Pages manifest temporarily unavailable:", type(exc).__name__)
+    if not state_file.exists() and not manifest_known:
+        raise RuntimeError("Cold recovery deferred until the public manifest can be checked")
     if not state_file.exists() and public_manifest:
         public_feed = fetch_public(args.page, "feed.json")
-        if public_feed and public_feed.get("schema_version") == SCHEMA:
-            state["engine"] = recover_engine(public_feed)
+        if (not public_feed or public_feed.get("schema_version") != SCHEMA
+                or public_feed.get("publish_hash", public_manifest["publish_hash"]) != public_manifest["publish_hash"]):
+            raise RuntimeError("Cold recovery deferred until the matching public feed is available")
+        state["engine"] = recover_engine(public_feed)
     due = due_sources(src, state, now)
     results = collect(due, args.upstream.resolve(), stamp(now)) if due else {}
     for s in due:
         results.setdefault(s["source_id"], {"status": "failed", "items": [], "error": "missing result"})
     changed, statuses, fingerprint = build_cycle(state, src, results, now, args.dist, public_manifest, run_id)
     ready = all(s.get("last_good_at") for s in state["sources"].values())
-    if ready and not state.get("trial_start"):
+    if state.get("trial_basis") != "public-v1":
+        state.pop("trial_start", None)
+        state["trial_basis"] = "public-v1"
+    if args.page and public_manifest and ready and not args.preflight and not state.get("trial_start"):
         # Start at the next full schedule slot, after all sources have delivered at least once.
         state["trial_start"] = next_slot(now, 10)
     state["run_number"] = number
@@ -179,8 +215,10 @@ def main():
     elapsed = round(time.monotonic() - start, 2)
     observation = {"schema_version": SCHEMA, "as_of": stamp(now), "run_id": run_id, "run_number": number,
                    "trigger": os.environ.get("GITHUB_EVENT_NAME", "local"), "trial_start": state.get("trial_start"),
+                   "trial_basis": state["trial_basis"],
                    "statuses": statuses, "results": results, "build_seconds": elapsed, "publish_hash": fingerprint,
-                   "publish_requested": changed and manifest_known, "commit": os.environ.get("GITHUB_SHA")}
+                   "preflight": args.preflight, "publish_requested": changed and manifest_known and not args.preflight,
+                   "commit": os.environ.get("GITHUB_SHA")}
     write(args.work / "sample/observation.json", observation)
     print("Nguồn từng lấy thành công:", sum(bool(x.get("last_good_at")) for x in statuses), "/", len(src))
     report = "\n".join(["| Nguồn | Kết quả | Số bài | Loại giờ | Link mẫu / lỗi |", "|---|---|---:|---|---|"]
