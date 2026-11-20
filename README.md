@@ -39,6 +39,8 @@ Chọn **GitHub Actions** làm nguồn Pages. Workflow **Hot news** thu thập t
 
 Trên GitHub runner ngày 20/11/2026, 13 đầu tin trả bài trong lượt preflight. Đầu tin Caixin Global qua Google News trả HTTP 429. Các artifact của lượt này giữ số bài, link mẫu và trạng thái từng nguồn. [Preflight 14 nguồn](https://github.com/antrinhht/hot-news-trial/actions/runs/44716959169)
 
+Sau thời gian chờ, runner đã nhận **73 mục Caixin**, hoàn tất kiểm tra thực tế **14/14 nguồn**. Cửa sổ 48 giờ bắt đầu lúc **17:53 ngày 20/11/2026** và kết thúc lúc **17:53 ngày 22/11/2026**, giờ Việt Nam. Báo cáo đợi thêm 20 phút để các mẫu cuối có đủ thời gian xuất hiện. [Lượt phục hồi và bản Pages đã xác nhận](https://github.com/antrinhht/hot-news-trial/actions/runs/44721719856)
+
 Job deploy đã xác nhận manifest công khai trên Pages. Workflow diễn tập riêng đã kiểm tra snapshot không đổi, lỗi một nguồn, khôi phục sau một bước phát hành bị từ chối có mô phỏng và dựng lại trạng thái từ JSON công khai. [Bản phát hành đầu](https://github.com/antrinhht/hot-news-trial/actions/runs/44717442678) · [Diễn tập khôi phục](https://github.com/antrinhht/hot-news-trial/actions/runs/44717783960)
 
 Mỗi lượt đánh giá đính kèm báo cáo Markdown và JSON cho hai cửa sổ 48 giờ và 7 ngày. Báo cáo ban đầu ghi 13/14 nguồn. [Báo cáo ban đầu](https://github.com/antrinhht/hot-news-trial/actions/runs/44717790082)
