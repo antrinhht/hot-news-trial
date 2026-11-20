@@ -129,6 +129,8 @@ def update_health(sources, state, results, now):
             elif status == "ok":
                 status = "empty"
             info["status"] = status
+            message = str(result.get("error", ""))
+            info["issue"] = "rate_limited" if "429" in message else status
             info["next_due_at"] = (next_slot(now, src["interval_minutes"]) if status in {"changed", "unchanged"}
                                    else stamp(now + timedelta(seconds=max(src["interval_minutes"] * 60, 1800,
                                                                          result.get("retry_after_seconds", 0)))))
@@ -138,7 +140,10 @@ def update_health(sources, state, results, now):
                          "last_good_at": info.get("last_good_at"), "next_due_at": info.get("next_due_at")})
         # Both successful dispositions have the same visible health.
         health = info.get("status", "not_due")
-        public.append({**src, "status": "unchanged" if health in ("changed", "unchanged") else health})
+        rendered = {**src, "status": "unchanged" if health in ("changed", "unchanged") else health}
+        if health in ("empty", "failed"):
+            rendered.update(issue=info.get("issue", health), retry_at=info.get("next_due_at"))
+        public.append(rendered)
     return statuses, public
 
 
@@ -152,9 +157,12 @@ def build_cycle(state, sources, results, now, dist, public_manifest, release_id)
     ui = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted((ROOT / "site").rglob("*")) if p.is_file()}
     value = digest([ui, content])
     good = any(row["status"] in {"changed", "unchanged"} for row in statuses)
-    bootstrap = not results and public_manifest is None and bool(projection["events"])
+    if results:
+        state["last_batch_good"] = good
+    # A deploy-only tick can publish a changed UI or grouping rule from saved data.
+    from_checkpoint = not results and state.get("last_batch_good", True) and bool(projection["events"])
     different = value != (public_manifest or {}).get("publish_hash")
-    changed = (good or bootstrap) and different
+    changed = (good or from_checkpoint) and different
     if changed:
         shutil.copytree(ROOT / "site", dist, dirs_exist_ok=True)
         write(dist / "feed.json", {**content, "published_at": stamp(now), "release_id": release_id, "publish_hash": value})

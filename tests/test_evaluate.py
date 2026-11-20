@@ -51,6 +51,77 @@ def story(title, url):
 
 
 class TrialEvaluationTests(unittest.TestCase):
+    def test_elapsed_grid_and_mature_samples_only(self):
+        url = "https://example.test/new"
+        before = sample(0, {})
+        recent = sample(
+            1,
+            {},
+            observer={
+                "observed_at": stamp(START + timedelta(minutes=10)),
+                "candidates": [{"source_id": "npr-world", "url": url}],
+                "public_items": [],
+                "polls": [{"status": "failed"}, {"status": "ok"}],
+            },
+        )
+        for entry in (before, recent):
+            entry["observation"]["trial_start"] = None
+        short = report([before, recent], 48, START + timedelta(minutes=11), registry())[
+            "operations"
+        ]
+        self.assertEqual(
+            (short["slots"], short["expected_slots"], short["planned_slots"]),
+            (2, 2, 288),
+        )
+        self.assertEqual(short["schedule_rate"], 1)
+        self.assertEqual(short["observer_attempts"], 2)
+        self.assertEqual(short["observer_successful_polls"], 1)
+        self.assertIsNone(short["latency_within_20m"])
+        self.assertIsNone(short["latency_samples"][0]["within_20m"])
+        self.assertEqual(short["mature_fast_sample_count"], 0)
+        self.assertEqual(short["latency_cohorts"][10]["pending"], 1)
+        self.assertEqual(short["latency_cohorts"][10]["missed"], 0)
+        mature = report(
+            [before, recent], 48, START + timedelta(minutes=30), registry()
+        )["operations"]
+        self.assertEqual(mature["latency_within_20m"], 0)
+        self.assertEqual(mature["latency_cohorts"][10]["missed"], 1)
+
+    def test_qualification_freezes_corrected_bylines_at_observation(self):
+        url = "https://example.test/wire/one"
+        original = sample(0, {"bbc-world": story("News", url)})
+        corrected = story("Revised", url)
+        corrected["items"][0]["origin_owner_id"] = "ap"
+        addition = sample(
+            1, {"bbc-world": corrected, "npr-world": story("New reporting", url)}
+        )
+        ab = report([original, addition], 48, START + timedelta(hours=49), registry())[
+            "comparison"
+        ]
+        event = ab["additional"][0]
+        self.assertEqual(
+            event["first_qualified_at"], stamp(START + timedelta(minutes=10))
+        )
+        self.assertEqual(
+            {link["participant_id"] for link in event["qualification_links"]},
+            {"ap", "npr"},
+        )
+        self.assertEqual(
+            ab["source_contributions"]["bbc-world"]["known_wire_copies"], 1
+        )
+        # The same two URLs ultimately both identify a single AP report.
+        later = story("Revised attribution", url)
+        later["items"][0]["origin_owner_id"] = "ap"
+        correction = sample(2, {"npr-world": later})
+        adjusted = report(
+            [original, addition, correction],
+            48,
+            START + timedelta(hours=49),
+            registry(),
+        )["comparison"]
+        self.assertEqual(adjusted["additional"], [])
+        self.assertEqual(adjusted["full"]["corroborated"], 0)
+
     def test_new_owner_and_id_drift_between_independent_replays(self):
         base = registry()
         url = "https://example.test/story/12"

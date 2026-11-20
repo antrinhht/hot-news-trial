@@ -57,9 +57,16 @@ class WorkflowBehavior(unittest.TestCase):
         feed = json.loads((self.dist / "feed.json").read_text(encoding="utf-8"))
         unsuccessful, _, _ = self.cycle({"nyt-world":{"status":"empty","items":[]}}, NOW + timedelta(minutes=10), {"publish_hash":sha})
         self.assertFalse(unsuccessful)
+        self.assertFalse(self.cycle({}, NOW + timedelta(minutes=15), {"publish_hash":sha})[0])
         self.state = new_state()
         self.state["engine"] = recover_engine(copy.deepcopy(feed))
         self.cycle(results, NOW + timedelta(minutes=30), None)
         recovered = json.loads((self.dist / "feed.json").read_text(encoding="utf-8"))
         self.assertEqual(feed["latest"], recovered["latest"])
         self.assertEqual(feed["events"][0]["items"][0]["first_seen_at"], recovered["events"][0]["items"][0]["first_seen_at"])
+
+    def test_deploy_only_tick_uses_checkpoint_for_a_changed_release(self):
+        self.cycle(run_result("bbc-world"))
+        self.assertTrue(self.cycle({}, NOW, {"publish_hash":"previous-ui"})[0])
+        current = json.loads((self.dist / "manifest.json").read_text(encoding="utf-8"))
+        self.assertFalse(self.cycle({}, NOW, current)[0])

@@ -74,6 +74,7 @@ h1 span { font-style: italic; color: var(--accent); }
 .source-state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: #938f86; }
 .source-state[data-state=changed]::before, .source-state[data-state=unchanged]::before { background: #36704f; }
 .source-state[data-state=failed]::before, .source-state[data-state=empty]::before { background: var(--accent); }
+.source-retry { display: block; margin-top: .2rem; color: var(--muted); font-weight: normal; }
 .refresh, .more { background: transparent; border: 1px solid var(--rule); border-radius: 4px; padding: .55rem .8rem; font-size: .84rem; }
 .refresh { margin-top: 18px; display: inline-flex; align-items: center; gap: .65rem; }
 .refresh span { font-size: 1rem; }

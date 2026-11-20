@@ -161,20 +161,36 @@ def replay(observations, sources):
                 },
             )
             saved["title"] = event["title"]
+            changed_provenance = set()
             for item in event["items"]:
-                if item["item_id"] not in saved["items"]:
-                    saved["items"][item["item_id"]] = {
-                        k: item[k]
-                        for k in (
-                            "source_id",
-                            "url",
-                            "first_seen_at",
-                            "editorial",
-                            "participant_id",
-                            "owner_id",
-                            "market",
-                        )
-                    }
+                iid = item["item_id"]
+                previous = saved["items"].get(iid)
+                if previous and previous["participant_id"] != item["participant_id"]:
+                    changed_provenance.add(iid)
+                saved["items"][iid] = {
+                    k: item[k]
+                    for k in (
+                        "source_id",
+                        "url",
+                        "first_seen_at",
+                        "editorial",
+                        "participant_id",
+                        "owner_id",
+                        "market",
+                    )
+                }
+            if saved["first_qualified_at"] and changed_provenance.intersection(
+                saved["qualification_items"]
+            ):
+                corrected = {
+                    saved["items"][iid]["participant_id"]
+                    for iid in saved["qualification_items"]
+                    if saved["items"][iid]["editorial"]
+                }
+                if len(corrected) < 2:
+                    # A corrected byline can reveal that both links were the same wire report.
+                    saved["first_qualified_at"] = None
+                    saved.pop("qualification_items")
             if len(event["markets"]) > 1:
                 saved["cross_market"] = True
             if (
@@ -182,7 +198,12 @@ def replay(observations, sources):
                 and len(set(event["editorial_owners"])) >= 2
             ):
                 saved["first_qualified_at"] = clock
-                saved["editorial_at_threshold"] = list(event["editorial_owners"])
+                # Values are replaced, never mutated. This retains the exact contemporaneous evidence.
+                saved["qualification_items"] = {
+                    item["item_id"]: saved["items"][item["item_id"]]
+                    for item in event["items"]
+                    if item["editorial"]
+                }
     return catalog
 
 
@@ -209,6 +230,7 @@ def evidence(event):
         "title": event["title"],
         "first_qualified_at": event["first_qualified_at"],
         "links": links,
+        "qualification_links": list(event.get("qualification_items", {}).values()),
     }
 
 
@@ -240,16 +262,16 @@ def compare(observations, sources):
         if not e["first_qualified_at"]:
             continue
         first_owner = {}
-        for i in members:
-            if i["editorial"] and i["participant_id"] in e["editorial_at_threshold"]:
-                owner = i["participant_id"]
-                first_owner[owner] = min(
-                    first_owner.get(owner, i["first_seen_at"]), i["first_seen_at"]
-                )
+        at_threshold = e["qualification_items"].values()
+        for i in at_threshold:
+            owner = i["participant_id"]
+            first_owner[owner] = min(
+                first_owner.get(owner, i["first_seen_at"]), i["first_seen_at"]
+            )
         threshold_time = sorted(first_owner.values())[1]
         second = {
             i["source_id"]
-            for i in members
+            for i in at_threshold
             if i["editorial"]
             and i["first_seen_at"] == threshold_time
             and first_owner.get(i["participant_id"]) == threshold_time
@@ -292,7 +314,9 @@ def operational(entries, start, end, now, sources):
     observed = []
     run_links = []
     commits = set()
-    polls = observation_bytes = poll_observer = deploy_count = missing_artifacts = 0
+    polls = observation_bytes = observer_attempted = poll_observer = deploy_count = (
+        missing_artifacts
+    ) = 0
     archive_bytes = Counter()
     for entry in entries:
         run = entry["run"]
@@ -302,7 +326,7 @@ def operational(entries, start, end, now, sources):
         jobs = {j["name"]: j for j in entry.get("jobs", [])}
         build, deploy = jobs.get("build", {}), jobs.get("deploy", {})
         started = build.get("started_at")
-        if started and start <= instant(started) < end:
+        if started and start <= instant(started) < end and instant(started) <= now:
             if run["event"] == "schedule":
                 slots.add(int((instant(started) - start).total_seconds() // 600))
             run_links.append(run.get("html_url"))
@@ -324,9 +348,13 @@ def operational(entries, start, end, now, sources):
         observer = entry.get("observer", {})
         if observer.get("observed_at"):
             ts = instant(observer["observed_at"])
-            if start <= ts < end + timedelta(minutes=20):
+            if start <= ts < end + timedelta(minutes=20) and ts <= now:
                 observed.append((ts, observer))
-        if not observation or not start <= instant(observation["as_of"]) < end:
+        if (
+            not observation
+            or not start <= instant(observation["as_of"]) < end
+            or instant(observation["as_of"]) > now
+        ):
             continue
         ts = instant(observation["as_of"])
         for row in observation["statuses"]:
@@ -345,6 +373,11 @@ def operational(entries, start, end, now, sources):
                 blocked_until[sid] = instant(row["next_due_at"])
     for ts, observer in sorted(observed, key=lambda pair: pair[0]):
         if start <= ts < end:
+            observer_attempted += (
+                len(observer.get("polls", []))
+                if "polls" in observer
+                else int("source_id" in observer)
+            )
             poll_observer += (
                 sum(p["status"] == "ok" for p in observer["polls"])
                 if "polls" in observer
@@ -355,7 +388,7 @@ def operational(entries, start, end, now, sources):
                 witnessed = (
                     instant(item["observed_at"]) if item.get("observed_at") else ts
                 )
-                if url and start <= witnessed < end:
+                if url and start <= witnessed < end and witnessed <= now:
                     candidate.setdefault((item["source_id"], url), (witnessed, item))
         if "public_items" in observer:
             public = {
@@ -371,7 +404,7 @@ def operational(entries, start, end, now, sources):
             else ts
         )
         for key in public & candidate.keys():
-            if key not in published and witnessed >= candidate[key][0]:
+            if key not in published and candidate[key][0] <= witnessed <= now:
                 published[key] = witnessed
     source_metrics = {}
     for src in sources:
@@ -395,6 +428,7 @@ def operational(entries, start, end, now, sources):
     latency = []
     cadences = {s["source_id"]: s["interval_minutes"] for s in sources}
     for key, (ts, item) in candidate.items():
+        mature = now >= ts + timedelta(minutes=20)
         measured = (
             (published[key] - ts).total_seconds() / 60 if key in published else None
         )
@@ -408,17 +442,23 @@ def operational(entries, start, end, now, sources):
                 if key in published
                 else None,
                 "minutes": measured,
-                "within_20m": measured is not None and measured <= 20,
+                "mature": mature,
+                "within_20m": (measured is not None and measured <= 20)
+                if mature
+                else None,
             }
         )
-    expected = int((end - start).total_seconds() // 600)
+    total_slots = math.ceil((end - start).total_seconds() / 600)
+    expected = min(total_slots, max(0, int((now - start).total_seconds() // 600) + 1))
     fast = [row for row in latency if row["interval_minutes"] == 10]
+    mature_fast = [row for row in fast if row["mature"]]
     latency_groups = {}
     for minutes in sorted(set(cadences.values())):
         samples = [row for row in latency if row["interval_minutes"] == minutes]
         latency_groups[minutes] = {
             "sample_count": len(samples),
-            "missed": sum(row["minutes"] is None for row in samples),
+            "pending": sum(not row["mature"] for row in samples),
+            "missed": sum(row["minutes"] is None and row["mature"] for row in samples),
             "p95_visible_minutes": percentile95(
                 [row["minutes"] for row in samples if row["minutes"] is not None]
             ),
@@ -426,11 +466,14 @@ def operational(entries, start, end, now, sources):
     return {
         "slots": len(slots),
         "expected_slots": expected,
+        "planned_slots": total_slots,
         "schedule_rate": ratio(len(slots), expected),
         "queue_seconds_p95": percentile95(queue),
         "build_seconds_p95": percentile95(builds),
         "deploy_seconds_p95": percentile95(deploys),
         "source_polls": polls,
+        "source_poll_unit": "logical source attempts before retries and redirects",
+        "observer_attempts": observer_attempted,
         "observer_successful_polls": poll_observer,
         "artifact_bytes": observation_bytes,
         "deploy_attempts": deploy_count,
@@ -442,7 +485,10 @@ def operational(entries, start, end, now, sources):
         "latency_samples": latency,
         "latency_cohorts": latency_groups,
         "fast_sample_count": len(fast),
-        "latency_within_20m": ratio(sum(i["within_20m"] for i in fast), len(fast)),
+        "mature_fast_sample_count": len(mature_fast),
+        "latency_within_20m": ratio(
+            sum(i["within_20m"] for i in mature_fast), len(mature_fast)
+        ),
         "billing_actual_usd": None,
     }
 
@@ -476,7 +522,7 @@ def report(entries, hours, now, sources, reviews=None):
             operations = operational(
                 entries,
                 probe_start,
-                min(probe_start + timedelta(hours=hours), now),
+                probe_start + timedelta(hours=hours),
                 now,
                 sources,
             )
@@ -497,7 +543,9 @@ def report(entries, hours, now, sources, reviews=None):
     observations = [
         e["observation"]
         for e in entries
-        if e.get("observation") and start <= instant(e["observation"]["as_of"]) < end
+        if e.get("observation")
+        and start <= instant(e["observation"]["as_of"]) < end
+        and instant(e["observation"]["as_of"]) <= now
     ]
     operations = operational(entries, start, end, now, sources)
     ab = compare(observations, sources)
@@ -535,7 +583,7 @@ def report(entries, hours, now, sources, reviews=None):
         if complete and operations["build_seconds_p95"] is not None
         else None,
         "fast_latency_95_percent_within_20min": rate >= 0.95
-        if complete and operations["fast_sample_count"] >= 20
+        if complete and operations["mature_fast_sample_count"] >= 20
         else None,
         "manual_20_clusters_and_5_incremental": audited >= 20 and len(validated) >= 5
         if complete
@@ -565,7 +613,7 @@ def markdown(r):
         heading = f"# Chờ đủ nguồn và bản Pages công khai\n\nĐã có dữ liệu từ **{len(r['observed_good'])}/14** nguồn. Nguồn còn thiếu: {missing}.\n"
         if r["operations"]:
             ops = r["operations"]
-            heading += f"\nLượt thăm dò từ {r['probe_start']}: {ops['slots']} khung lịch, {ops['source_polls']} lần gọi nguồn.\n"
+            heading += f"\nLượt thăm dò từ {r['probe_start']}: {ops['slots']}/{ops['expected_slots']} khung lịch đã đến hạn, {ops['source_polls']} lượt thu nguồn (trước retry/redirect), {ops['observer_attempts']} lượt thăm dò nguồn độc lập.\n"
         return heading
     met, ab = r["operations"], r["comparison"]
     show = lambda value: "chưa đo" if value is None else str(round(value, 2))
@@ -576,11 +624,11 @@ def markdown(r):
         "",
         "| Chỉ số | Giá trị |",
         "|---|---:|",
-        f"| Khung có job theo lịch | {met['slots']}/{met['expected_slots']} |",
+        f"| Khung có job / đã đến hạn (kế hoạch {met['planned_slots']}) | {met['slots']}/{met['expected_slots']} |",
         f"| p95 chờ runner / build / deploy (giây) | {show(met['queue_seconds_p95'])} / {show(met['build_seconds_p95'])} / {show(met['deploy_seconds_p95'])} |",
-        f"| Lượt gọi nguồn (trước retry) | {met['source_polls']} |",
+        f"| Lượt thu nguồn / thăm dò nguồn độc lập (trước retry/redirect) | {met['source_polls']} / {met['observer_attempts']} |",
         f"| Lần thử deploy / byte artifact quan sát | {met['deploy_attempts']} / {met['artifact_bytes']} |",
-        f"| Mẫu nhóm 10 phút hiển thị trong 20 phút | {sum(x['within_20m'] for x in met['latency_samples'] if x['interval_minutes'] == 10)}/{met['fast_sample_count']} |",
+        f"| Mẫu nhóm 10 phút hiển thị đúng hạn / đã đủ 20 phút | {sum(x['within_20m'] is True for x in met['latency_samples'] if x['interval_minutes'] == 10)}/{met['mature_fast_sample_count']} (còn {met['fast_sample_count'] - met['mature_fast_sample_count']} mẫu đang chờ) |",
         f"| Sự kiện ≥2 bên biên tập (7 / 14 nguồn) | {ab['baseline']['corroborated']} / {ab['full']['corroborated']} |",
         f"| Sự kiện ≥2 thị trường (7 / 14 nguồn) | {ab['baseline']['cross_market']} / {ab['full']['cross_market']} |",
         f"| Sự kiện đối chiếu thêm / QA xác nhận | {len(ab['additional'])} / {len(r['validated_additional'])} |",

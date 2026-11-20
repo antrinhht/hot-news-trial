@@ -155,8 +155,10 @@
       const ul = node("ul");
       for (const source of members) {
         const li = node("li", null, "source-line");
-        li.append(node("span", sourceName(source), "source-name"));
-        const state = node("span", statuses[source.status] || "Chưa rõ", "source-state");
+        const label = node("span", sourceName(source), "source-name");
+        if (source.retry_at) label.append(node("small", "Thử lại từ " + stamp(source.retry_at), "source-retry"));
+        li.append(label);
+        const state = node("span", source.issue === "rate_limited" ? "Giới hạn lượt gọi" : statuses[source.status] || "Chưa rõ", "source-state");
         state.dataset.state = source.status;
         li.append(state);
         ul.append(li);
